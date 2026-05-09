@@ -14,6 +14,10 @@ from src.common.db import mysql_connect
 from src.common.env_loader import env_int, env_str, load_env_file
 
 
+TARGET_DAY_OPEN = "09:00:00"
+TARGET_DAY_CLOSE = "15:30:00"
+
+
 def _to_int(value: Any) -> int:
     if value is None:
         return 0
@@ -70,32 +74,34 @@ def _parse_candle(row: Dict[str, Any], code: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _compact_to_prefetch_window(candles: List[Dict[str, Any]], stop_time: str, prefetch_count: int) -> List[Dict[str, Any]]:
-    """Keep a compact 5-minute candle window around stop_time.
+def _compact_to_required_window(candles: List[Dict[str, Any]], target: Minute5Target, prefetch_count: int) -> List[Dict[str, Any]]:
+    """Keep previous partial candles plus the full target-day session.
 
-    server32 deployments may return either:
-    - historical candles ending at stopTime, or
-    - forward candles starting at stopTime.
-
-    Therefore this function chooses the side that has enough candles:
-    1. If there are at least N candles <= stopTime, keep the last N historical candles.
-    2. Else if there are at least N candles >= stopTime, keep the first N forward candles.
-    3. Else keep the N candles nearest to stopTime.
+    Required example for 2026-01-05:
+    - previous available trading candles before 2026-01-05 09:00
+    - all 2026-01-05 09:00~15:30 candles
+    - total is normally capped to prefetch_count, but target-day candles are mandatory
     """
-    if prefetch_count <= 0 or len(candles) <= prefetch_count:
+    if prefetch_count <= 0 or not candles:
         return candles
 
-    stop_key = f"{stop_time[0:4]}-{stop_time[4:6]}-{stop_time[6:8]} {stop_time[8:10]}:{stop_time[10:12]}:{stop_time[12:14]}"
-    before = [c for c in candles if str(c["candle_time"]) <= stop_key]
-    after = [c for c in candles if str(c["candle_time"]) >= stop_key]
+    day_open = f"{target.search_date} {TARGET_DAY_OPEN}"
+    day_close = f"{target.search_date} {TARGET_DAY_CLOSE}"
 
-    if len(before) >= prefetch_count:
-        return before[-prefetch_count:]
+    before = [c for c in candles if str(c["candle_time"]) < day_open]
+    same_day = [c for c in candles if day_open <= str(c["candle_time"]) <= day_close]
 
-    if len(after) >= prefetch_count:
-        return after[:prefetch_count]
+    remaining = max(0, prefetch_count - len(same_day))
+    selected_before = before[-remaining:] if remaining > 0 else []
+    selected = selected_before + same_day
 
-    ranked = sorted(candles, key=lambda c: abs(_time_to_int(str(c["candle_time"])) - _time_to_int(stop_key)))
+    if selected:
+        selected.sort(key=lambda x: x["candle_time"])
+        return selected
+
+    # Fallback: keep the nearest candles to the target market open for diagnostics.
+    open_key = _time_to_int(day_open)
+    ranked = sorted(candles, key=lambda c: abs(_time_to_int(str(c["candle_time"])) - open_key))
     selected = ranked[:prefetch_count]
     selected.sort(key=lambda x: x["candle_time"])
     return selected
@@ -129,7 +135,7 @@ def fetch_minute5(target: Minute5Target, timeout: float, prefetch_count: int) ->
                 candles.append(parsed)
     candles.sort(key=lambda x: x["candle_time"])
     raw_count = len(candles)
-    candles = _compact_to_prefetch_window(candles, target.stop_time, prefetch_count)
+    candles = _compact_to_required_window(candles, target, prefetch_count)
     return bool(payload.get("Success", False)), str(payload.get("Message", "")), candles, raw_count
 
 
@@ -189,7 +195,8 @@ def main() -> None:
             if args.verbose:
                 first_time = candles[0]["candle_time"] if candles else ""
                 last_time = candles[-1]["candle_time"] if candles else ""
-                print(f"[{idx}/{len(targets)}] OK {target.code} raw={raw_len} kept={len(candles)} saved={saved} first={first_time} last={last_time}")
+                same_day_count = sum(1 for c in candles if str(c["candle_time"]).startswith(target.search_date))
+                print(f"[{idx}/{len(targets)}] OK {target.code} raw={raw_len} kept={len(candles)} same_day={same_day_count} saved={saved} first={first_time} last={last_time}")
         else:
             fail_count += 1
             print(f"[{idx}/{len(targets)}] FAIL {target.code} msg={msg} raw={raw_len} kept={len(candles)}")
