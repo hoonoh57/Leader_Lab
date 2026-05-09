@@ -71,19 +71,41 @@ def _parse_candle(row: Dict[str, Any], code: str) -> Optional[Dict[str, Any]]:
 
 
 def _compact_to_prefetch_window(candles: List[Dict[str, Any]], stop_time: str, prefetch_count: int) -> List[Dict[str, Any]]:
-    """Keep only the last N 5-minute candles at or before stop_time.
+    """Keep a compact 5-minute candle window around stop_time.
 
-    server32 may return several thousand rows. Leader_Lab only needs the leading window
-    for each 1516 target, so storing all returned rows makes the cache unnecessarily large.
+    server32 deployments may return either:
+    - historical candles ending at stopTime, or
+    - forward candles starting at stopTime.
+
+    Therefore this function chooses the side that has enough candles:
+    1. If there are at least N candles <= stopTime, keep the last N historical candles.
+    2. Else if there are at least N candles >= stopTime, keep the first N forward candles.
+    3. Else keep the N candles nearest to stopTime.
     """
-    if prefetch_count <= 0:
+    if prefetch_count <= 0 or len(candles) <= prefetch_count:
         return candles
 
     stop_key = f"{stop_time[0:4]}-{stop_time[4:6]}-{stop_time[6:8]} {stop_time[8:10]}:{stop_time[10:12]}:{stop_time[12:14]}"
-    filtered = [c for c in candles if str(c["candle_time"]) <= stop_key]
-    if not filtered:
-        filtered = candles
-    return filtered[-prefetch_count:]
+    before = [c for c in candles if str(c["candle_time"]) <= stop_key]
+    after = [c for c in candles if str(c["candle_time"]) >= stop_key]
+
+    if len(before) >= prefetch_count:
+        return before[-prefetch_count:]
+
+    if len(after) >= prefetch_count:
+        return after[:prefetch_count]
+
+    ranked = sorted(candles, key=lambda c: abs(_time_to_int(str(c["candle_time"])) - _time_to_int(stop_key)))
+    selected = ranked[:prefetch_count]
+    selected.sort(key=lambda x: x["candle_time"])
+    return selected
+
+
+def _time_to_int(value: str) -> int:
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) >= 14:
+        return int(digits[:14])
+    return 0
 
 
 def fetch_minute5(target: Minute5Target, timeout: float, prefetch_count: int) -> Tuple[bool, str, List[Dict[str, Any]], int]:
@@ -165,7 +187,9 @@ def main() -> None:
             ok_count += 1
             saved_count += saved
             if args.verbose:
-                print(f"[{idx}/{len(targets)}] OK {target.code} raw={raw_len} kept={len(candles)} saved={saved}")
+                first_time = candles[0]["candle_time"] if candles else ""
+                last_time = candles[-1]["candle_time"] if candles else ""
+                print(f"[{idx}/{len(targets)}] OK {target.code} raw={raw_len} kept={len(candles)} saved={saved} first={first_time} last={last_time}")
         else:
             fail_count += 1
             print(f"[{idx}/{len(targets)}] FAIL {target.code} msg={msg} raw={raw_len} kept={len(candles)}")
