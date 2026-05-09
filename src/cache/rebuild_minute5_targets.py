@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from typing import List
 
 from src.common.db import mysql_connect
 from src.common.env_loader import env_int, env_str, load_env_file
 
 
-MARKET_OPEN_HHMMSS = "090000"
-LOOKBACK_CALENDAR_DAYS = 10
+MARKET_CLOSE_HHMMSS = "153000"
 
 
 @dataclass(frozen=True)
@@ -25,29 +23,23 @@ class Minute5Target:
 
 
 def build_stop_time(search_date: str, search_time: str) -> str:
-    """Build server32 request stopTime for the required 5m cache window.
+    """Build the server32 stopTime key for the target trading day.
 
-    Required cache window:
-    - previous trading candles before the target day
-    - full target day session 09:00~15:30
-    - total compacted window around 200 candles
+    server32 minute endpoint is count/history based:
+    GET /api/market/candles/minute?code={code}&tick=5&stopTime=yyyyMMddHHmmss
 
-    This server32 instance returns candles forward from stopTime. Therefore we start
-    the request several calendar days before the target day, then the downloader
-    compacts the response to: prior candles + full target-day session.
+    For Leader_Lab caching we request the target date close, then the downloader:
+    - normalizes the returned array to chronological order
+    - keeps the latest N candles up to target-day 15:30
+
+    This yields: previous trading candles + full target-day session.
     """
-    search_dt = datetime.strptime(search_date, "%Y-%m-%d")
-    request_dt = search_dt - timedelta(days=LOOKBACK_CALENDAR_DAYS)
-    return request_dt.strftime("%Y%m%d") + MARKET_OPEN_HHMMSS
+    date_part = search_date.replace("-", "")
+    return date_part + MARKET_CLOSE_HHMMSS
 
 
 def fetch_targets(limit: int = 0, only_missing: bool = True, min_count: int = 200) -> List[Minute5Target]:
-    """Return performance rows needing 5-minute candle cache.
-
-    A target is complete only when both conditions are true:
-    - target-day session candles exist for 09:00~15:30
-    - total prior+target-day compact window has at least min_count candles
-    """
+    """Return performance rows needing 5-minute candle cache."""
     sql = """
     SELECT
         p.id AS performance_id,
