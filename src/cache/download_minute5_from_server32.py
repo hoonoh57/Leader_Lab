@@ -14,10 +14,6 @@ from src.common.db import mysql_connect
 from src.common.env_loader import env_int, env_str, load_env_file
 
 
-TARGET_DAY_OPEN = "09:00:00"
-TARGET_DAY_CLOSE = "15:30:00"
-
-
 def _to_int(value: Any) -> int:
     if value is None:
         return 0
@@ -44,6 +40,13 @@ def _time_text(value: Any) -> Optional[str]:
     if len(text) >= 12 and text[:12].isdigit():
         return f"{text[0:4]}-{text[4:6]}-{text[6:8]} {text[8:10]}:{text[10:12]}:00"
     return None
+
+
+def _time_to_int(value: str) -> int:
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) >= 14:
+        return int(digits[:14])
+    return 0
 
 
 def _parse_candle(row: Dict[str, Any], code: str) -> Optional[Dict[str, Any]]:
@@ -74,44 +77,34 @@ def _parse_candle(row: Dict[str, Any], code: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _compact_to_required_window(candles: List[Dict[str, Any]], target: Minute5Target, prefetch_count: int) -> List[Dict[str, Any]]:
-    """Keep previous partial candles plus the full target-day session.
+def _compact_to_latest_window(candles: List[Dict[str, Any]], target: Minute5Target, prefetch_count: int) -> List[Dict[str, Any]]:
+    """Normalize server32 count/history response and keep latest N candles up to stopTime.
 
-    Required example for 2026-01-05:
-    - previous available trading candles before 2026-01-05 09:00
-    - all 2026-01-05 09:00~15:30 candles
-    - total is normally capped to prefetch_count, but target-day candles are mandatory
+    server32 returns up to about 900 minute candles for the requested stopTime.
+    The correct cache window is:
+    - sort or reverse into chronological order
+    - discard candles after target.stop_time
+    - return the last N candles
+
+    If target.stop_time is 20260105153000, this should produce:
+    previous trading candles + full 2026-01-05 09:00~15:30 session, in ascending time order.
     """
-    if prefetch_count <= 0 or not candles:
-        return candles
+    if not candles:
+        return []
 
-    day_open = f"{target.search_date} {TARGET_DAY_OPEN}"
-    day_close = f"{target.search_date} {TARGET_DAY_CLOSE}"
+    stop_key = f"{target.stop_time[0:4]}-{target.stop_time[4:6]}-{target.stop_time[6:8]} {target.stop_time[8:10]}:{target.stop_time[10:12]}:{target.stop_time[12:14]}"
+    stop_int = _time_to_int(stop_key)
 
-    before = [c for c in candles if str(c["candle_time"]) < day_open]
-    same_day = [c for c in candles if day_open <= str(c["candle_time"]) <= day_close]
+    normalized = sorted(candles, key=lambda c: str(c["candle_time"]))
+    eligible = [c for c in normalized if _time_to_int(str(c["candle_time"])) <= stop_int]
 
-    remaining = max(0, prefetch_count - len(same_day))
-    selected_before = before[-remaining:] if remaining > 0 else []
-    selected = selected_before + same_day
+    if not eligible:
+        eligible = normalized
 
-    if selected:
-        selected.sort(key=lambda x: x["candle_time"])
-        return selected
+    if prefetch_count <= 0:
+        return eligible
 
-    # Fallback: keep the nearest candles to the target market open for diagnostics.
-    open_key = _time_to_int(day_open)
-    ranked = sorted(candles, key=lambda c: abs(_time_to_int(str(c["candle_time"])) - open_key))
-    selected = ranked[:prefetch_count]
-    selected.sort(key=lambda x: x["candle_time"])
-    return selected
-
-
-def _time_to_int(value: str) -> int:
-    digits = "".join(ch for ch in value if ch.isdigit())
-    if len(digits) >= 14:
-        return int(digits[:14])
-    return 0
+    return eligible[-prefetch_count:]
 
 
 def fetch_minute5(target: Minute5Target, timeout: float, prefetch_count: int) -> Tuple[bool, str, List[Dict[str, Any]], int]:
@@ -133,9 +126,8 @@ def fetch_minute5(target: Minute5Target, timeout: float, prefetch_count: int) ->
             parsed = _parse_candle(item, target.code)
             if parsed is not None:
                 candles.append(parsed)
-    candles.sort(key=lambda x: x["candle_time"])
     raw_count = len(candles)
-    candles = _compact_to_required_window(candles, target, prefetch_count)
+    candles = _compact_to_latest_window(candles, target, prefetch_count)
     return bool(payload.get("Success", False)), str(payload.get("Message", "")), candles, raw_count
 
 
