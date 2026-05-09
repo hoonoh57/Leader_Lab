@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from src.common.db import mysql_connect, sqlite_connect
@@ -42,6 +41,23 @@ def normalize_code(value: Any) -> str:
     return text.zfill(6) if text else ""
 
 
+def _table_columns(conn, table_name: str) -> List[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name});").fetchall()
+    return [str(r[1]) for r in rows]
+
+
+def _coalesce_column_expr(alias: str, available_columns: List[str], candidates: List[str], default_sql: str = "NULL") -> str:
+    parts: List[str] = []
+    for name in candidates:
+        if name in available_columns:
+            parts.append(f"{alias}.{name}")
+    if not parts:
+        return default_sql
+    if len(parts) == 1:
+        return parts[0]
+    return "COALESCE(" + ", ".join(parts) + ")"
+
+
 def fetch_sqlite_rows(sqlite_path: Optional[str]) -> List[Dict[str, Any]]:
     conn = sqlite_connect(sqlite_path)
     try:
@@ -49,36 +65,55 @@ def fetch_sqlite_rows(sqlite_path: Optional[str]) -> List[Dict[str, Any]]:
         if "kiwoom_1516_raw_result" not in table_names:
             raise RuntimeError("SQLite table not found: kiwoom_1516_raw_result")
 
-        rows = conn.execute(
-            """
+        raw_cols = _table_columns(conn, "kiwoom_1516_raw_result")
+        has_map = "stock_code_map" in table_names
+        map_cols = _table_columns(conn, "stock_code_map") if has_map else []
+
+        raw_code_expr = _coalesce_column_expr("r", raw_cols, ["code", "stock_code", "종목코드"], "''")
+        raw_name_expr = _coalesce_column_expr("r", raw_cols, ["stock_name", "name", "종목명"], "''")
+
+        if has_map and "code" in map_cols and "stock_name" in map_cols:
+            mapped_expr = f"COALESCE(m.code, {raw_code_expr}, '') AS mapped_code"
+            join_sql = "LEFT JOIN stock_code_map m ON m.stock_name = " + raw_name_expr
+        else:
+            mapped_expr = f"COALESCE({raw_code_expr}, '') AS mapped_code"
+            join_sql = ""
+
+        sql = f"""
             SELECT
                 r.*,
-                COALESCE(m.code, r.code, '') AS mapped_code
+                {mapped_expr}
             FROM kiwoom_1516_raw_result r
-            LEFT JOIN stock_code_map m
-                ON m.stock_name = r.stock_name
-            ORDER BY r.search_date, r.search_time, r.stock_name;
-            """
-        ).fetchall()
+            {join_sql}
+            ORDER BY r.search_date, r.search_time, {raw_name_expr};
+        """
+        rows = conn.execute(sql).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
 
 
+def _first(row: Dict[str, Any], names: List[str]) -> Any:
+    for name in names:
+        if name in row and row.get(name) is not None:
+            return row.get(name)
+    return None
+
+
 def convert_row(row: Dict[str, Any], condition_name: str, hold_period: str) -> Optional[Dict[str, Any]]:
-    code = normalize_code(row.get("mapped_code") or row.get("code"))
-    name = str(row.get("stock_name") or row.get("name") or "").strip()
+    code = normalize_code(_first(row, ["mapped_code", "code", "stock_code", "종목코드"]))
+    name = str(_first(row, ["stock_name", "name", "종목명"]) or "").strip()
     if code == "" or name == "":
         return None
 
-    max_ret = to_decimal(row.get("max_ret_in_period") or row.get("max_ret"))
-    ret_1m = to_decimal(row.get("ret_1m"))
-    ret_3m = to_decimal(row.get("ret_3m"))
-    ret_7h = to_decimal(row.get("ret_7h"))
+    max_ret = to_decimal(_first(row, ["max_ret_in_period", "max_ret", "period_max_ret", "기간내최고수익률"]))
+    ret_1m = to_decimal(_first(row, ["ret_1m", "min1", "1분간"]))
+    ret_3m = to_decimal(_first(row, ["ret_3m", "min3", "3분간"]))
+    ret_7h = to_decimal(_first(row, ["ret_7h", "hour7", "7시간"]))
 
     return {
-        "search_date": str(row.get("search_date"))[:10],
-        "search_time": str(row.get("search_time") or env_str("DEFAULT_SEARCH_TIME", "09:05:00")),
+        "search_date": str(_first(row, ["search_date", "date", "검색일자"]))[:10],
+        "search_time": str(_first(row, ["search_time", "time", "검색시간"]) or env_str("DEFAULT_SEARCH_TIME", "09:05:00")),
         "condition_name": condition_name,
         "hold_period": hold_period,
         "code": code,
@@ -87,13 +122,13 @@ def convert_row(row: Dict[str, Any], condition_name: str, hold_period: str) -> O
         "ret_3m": ret_3m,
         "ret_7h": ret_7h,
         "max_ret_in_period": max_ret,
-        "search_volume": to_int(row.get("search_volume") or row.get("volume")),
-        "etc_value": to_decimal(row.get("etc_value") or row.get("etc")),
+        "search_volume": to_int(_first(row, ["search_volume", "volume", "검색시점거래량"])),
+        "etc_value": to_decimal(_first(row, ["etc_value", "etc", "기타"])),
         "label_3": 1 if max_ret is not None and max_ret >= Decimal("3") else 0,
         "label_5": 1 if max_ret is not None and max_ret >= Decimal("5") else 0,
         "label_10": 1 if max_ret is not None and max_ret >= Decimal("10") else 0,
         "raw_line": row.get("raw_line"),
-        "source_file": row.get("source_file") or row.get("raw_path"),
+        "source_file": _first(row, ["source_file", "raw_path"]),
     }
 
 
