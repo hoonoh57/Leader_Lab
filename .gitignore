@@ -1,0 +1,48 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# large / local data
+data/
+raw/
+cache/
+*.sqlite3
+*.db
+*.parquet
+*.feather
+*.pkl
+*.h5
+*.sql.dump
+*.dump
+*.zip
+*.7z
+
+# logs / runtime
+logs/
+*.log
+reports/*.tmp
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# keep small samples and report templates
+!data_sample/
+!data_sample/*.csv
+!reports/
+!reports/*.md
+!reports/*.csv
+!reports/*.html
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
