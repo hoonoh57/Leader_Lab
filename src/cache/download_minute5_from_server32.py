@@ -70,7 +70,23 @@ def _parse_candle(row: Dict[str, Any], code: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def fetch_minute5(target: Minute5Target, timeout: float) -> Tuple[bool, str, List[Dict[str, Any]]]:
+def _compact_to_prefetch_window(candles: List[Dict[str, Any]], stop_time: str, prefetch_count: int) -> List[Dict[str, Any]]:
+    """Keep only the last N 5-minute candles at or before stop_time.
+
+    server32 may return several thousand rows. Leader_Lab only needs the leading window
+    for each 1516 target, so storing all returned rows makes the cache unnecessarily large.
+    """
+    if prefetch_count <= 0:
+        return candles
+
+    stop_key = f"{stop_time[0:4]}-{stop_time[4:6]}-{stop_time[6:8]} {stop_time[8:10]}:{stop_time[10:12]}:{stop_time[12:14]}"
+    filtered = [c for c in candles if str(c["candle_time"]) <= stop_key]
+    if not filtered:
+        filtered = candles
+    return filtered[-prefetch_count:]
+
+
+def fetch_minute5(target: Minute5Target, timeout: float, prefetch_count: int) -> Tuple[bool, str, List[Dict[str, Any]], int]:
     base_url = env_str("SERVER32_BASE_URL", "http://localhost:8081").rstrip("/")
     endpoint = env_str("SERVER32_MINUTE_ENDPOINT", "/api/market/candles/minute")
     params = {"code": target.code, "tick": "5", "stopTime": target.stop_time}
@@ -79,10 +95,10 @@ def fetch_minute5(target: Minute5Target, timeout: float) -> Tuple[bool, str, Lis
         response.raise_for_status()
         payload = response.json()
     except Exception as ex:
-        return False, f"REQUEST_ERROR: {type(ex).__name__}: {ex}", []
+        return False, f"REQUEST_ERROR: {type(ex).__name__}: {ex}", [], 0
     data = payload.get("Data") or []
     if not isinstance(data, list):
-        return False, "INVALID_DATA", []
+        return False, "INVALID_DATA", [], 0
     candles: List[Dict[str, Any]] = []
     for item in data:
         if isinstance(item, dict):
@@ -90,7 +106,9 @@ def fetch_minute5(target: Minute5Target, timeout: float) -> Tuple[bool, str, Lis
             if parsed is not None:
                 candles.append(parsed)
     candles.sort(key=lambda x: x["candle_time"])
-    return bool(payload.get("Success", False)), str(payload.get("Message", "")), candles
+    raw_count = len(candles)
+    candles = _compact_to_prefetch_window(candles, target.stop_time, prefetch_count)
+    return bool(payload.get("Success", False)), str(payload.get("Message", "")), candles, raw_count
 
 
 def upsert_candles(candles: List[Dict[str, Any]]) -> int:
@@ -124,33 +142,37 @@ def main() -> None:
     parser.add_argument("--min-count", type=int, default=200)
     parser.add_argument("--interval-sec", type=float, default=0.2)
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("--prefetch-count", type=int, default=0)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     load_env_file(args.env)
     min_count = args.min_count or env_int("MINUTE5_PREFETCH_COUNT", 200)
+    prefetch_count = args.prefetch_count or env_int("MINUTE5_PREFETCH_COUNT", 200)
     targets = fetch_targets(limit=args.limit, only_missing=not args.all, min_count=min_count)
     print("=== download_minute5_from_server32 ===")
-    print(f"targets={len(targets)} only_missing={not args.all} min_count={min_count}")
+    print(f"targets={len(targets)} only_missing={not args.all} min_count={min_count} prefetch_count={prefetch_count}")
 
     ok_count = 0
     fail_count = 0
     saved_count = 0
+    raw_count = 0
     for idx, target in enumerate(targets, start=1):
-        ok, msg, candles = fetch_minute5(target, args.timeout)
+        ok, msg, candles, raw_len = fetch_minute5(target, args.timeout, prefetch_count)
+        raw_count += raw_len
         if ok and candles:
             saved = upsert_candles(candles)
             ok_count += 1
             saved_count += saved
             if args.verbose:
-                print(f"[{idx}/{len(targets)}] OK {target.code} candles={len(candles)} saved={saved}")
+                print(f"[{idx}/{len(targets)}] OK {target.code} raw={raw_len} kept={len(candles)} saved={saved}")
         else:
             fail_count += 1
-            print(f"[{idx}/{len(targets)}] FAIL {target.code} msg={msg} candles={len(candles)}")
+            print(f"[{idx}/{len(targets)}] FAIL {target.code} msg={msg} raw={raw_len} kept={len(candles)}")
         if args.interval_sec > 0:
             time.sleep(args.interval_sec)
     print("=== DONE ===")
-    print(f"ok_targets={ok_count} fail_targets={fail_count} saved_candles={saved_count}")
+    print(f"ok_targets={ok_count} fail_targets={fail_count} raw_candles={raw_count} saved_candles={saved_count}")
 
 
 if __name__ == "__main__":
