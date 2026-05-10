@@ -31,7 +31,239 @@ docs/todo_2026_05_10_research_track.md
 
 ---
 
-## 2. What was corrected
+## 2. Current state at handoff
+
+### Implemented assets
+
+The SuperTrend Regime Discovery bundle has been partially implemented.
+
+Files now exist or are being actively corrected:
+
+```text
+docs/supertrend_regime_discovery_plan.md
+sql/create_supertrend_regime_discovery.sql
+src/analysis/build_supertrend_regime_discovery.py
+scripts/build_supertrend_regime_discovery.ps1
+src/review/generate_supertrend_regime_discovery_dashboard.py
+scripts/build_supertrend_regime_discovery_dashboard.ps1
+```
+
+Tables:
+
+```text
+supertrend_regime_segment
+supertrend_regime_summary
+supertrend_regime_feature_summary
+```
+
+Report path:
+
+```text
+reports/supertrend_regime_discovery_dashboard.html
+```
+
+### Current blocking issue
+
+The current work is not finished until chart verification is consistent.
+
+Observed issue from user review:
+
+```text
+Even after analyzer warm-up correction, the dashboard still visually shows the same problem:
+strong early morning rise appears excluded,
+and ST shaded segment can appear after the real early surge.
+```
+
+Root cause:
+
+```text
+The analyzer was corrected to use previous intraday warmup candles,
+but the dashboard was still using current-day-only candles or had incomplete ST line rendering.
+```
+
+The next session must first verify and finish the dashboard correction.
+
+---
+
+## 3. Critical technical rule: SuperTrend needs prior intraday warm-up
+
+For early-session SuperTrend/ATR testing, current-day-only candles are invalid.
+
+Wrong method:
+
+```text
+Load 09:00~15:30 current-day candles only
+calculate ATR/SuperTrend from 09:00
+```
+
+Why wrong:
+
+```text
+ATR/SuperTrend needs prior bars.
+Without prior bars, the first several 5-minute bars become warm-up noise.
+The real early strong move can be missed or marked late.
+```
+
+Correct method:
+
+```text
+Load previous intraday 5-minute candles before current-day 09:00
+append current-day candles
+calculate ATR/SuperTrend on warmup + current-day candles
+store/evaluate only current-day segments
+```
+
+Current intended parameter:
+
+```text
+warmup_bars = 80
+```
+
+This provides enough prior 5-minute candles to stabilize ST(7), ST(10), ST(14) in early session.
+
+---
+
+## 4. Analyzer status
+
+`src/analysis/build_supertrend_regime_discovery.py` was corrected to use warm-up candles.
+
+Expected behavior:
+
+```text
+load_warmup_day_candles(conn, trade_date, code, warmup_bars)
+    -> previous candles before 09:00 DESC LIMIT warmup_bars
+    -> reverse previous candles
+    -> append current-day 09:00~15:30 candles
+```
+
+Then:
+
+```text
+calculate ATR/SuperTrend on warmup + current-day rows
+extract segments only from current_start_idx onward
+start-state features are calculated from current-day rows only
+```
+
+Expected command:
+
+```powershell
+cd E:\2026\Leader_Lab
+.\scripts\build_supertrend_regime_discovery.ps1
+```
+
+Expected output marker:
+
+```text
+warmup_bars=80
+=== DONE build_supertrend_regime_discovery ===
+=== supertrend_regime_summary ===
+```
+
+User uploaded a run log after analyzer warm-up correction. Representative results:
+
+```text
+ST(7,2.0) ALL:
+segment_count = 5772
+gain3_rate = 36.33%
+gain5_rate = 22.54%
+gain10_rate = 9.68%
+fail1_rate = 35.57%
+end_negative_rate = 51.87%
+
+ST(7,2.0) GOOD_GAIN5:
+segment_count = 1301
+avg_st_up_bars = 29.74
+avg_st_up_max_return_pct = 10.65%
+median_st_up_max_return_pct = 9.12%
+
+ST(7,2.0) GREAT_GAIN10:
+segment_count = 559
+avg_st_up_bars = 36.80
+avg_st_up_max_return_pct = 15.38%
+```
+
+Important first-pass feature result:
+
+```text
+ST(7,2.0) segment_amount:
+Good avg = 537.7억
+Bad avg  = 102.1억
+Diff     = 435.6억
+
+ST(7,2.0) st_up_bars:
+Good avg = 29.74 bars
+Bad avg  = 13.09 bars
+```
+
+Interpretation:
+
+```text
+Good ST regimes are still strongly associated with high internal segment amount and longer trend duration.
+Start cumulative amount is not a simple positive filter; Bad regimes can have larger start_cum_amount, likely because they are late/overheated or noisy after prior activity.
+```
+
+---
+
+## 5. Dashboard status and next-session priority
+
+The dashboard is the immediate priority.
+
+The dashboard must use the exact same warm-up principle as the analyzer.
+
+Required dashboard behavior:
+
+```text
+1. load warmup candles before 09:00 + current-day candles
+2. render previous/warmup candles before current-day 09:00
+3. mark current-day 09:00 with vertical dotted line
+4. calculate SuperTrend on warmup + current-day candles in the browser or from precomputed data
+5. draw ST Up and ST Down lines
+6. draw stored DB segment shading over the same chart
+7. draw capture time, ST start, ST end, ST max markers
+```
+
+The dashboard generator should contain:
+
+```text
+load_warmup_candles_for_segments(conn, segments, warmup_bars)
+--warmup-bars argument
+ST Up / ST Down line rendering
+09:00 day-open vertical line
+warmup region shading
+```
+
+The current GitHub state may include a recently updated dashboard generator commit. The next session must verify it actually exists locally after `git pull` and that the generated HTML reflects warm-up candles.
+
+Expected command:
+
+```powershell
+cd E:\2026\Leader_Lab
+git pull
+.\scripts\build_supertrend_regime_discovery_dashboard.ps1
+```
+
+Expected dashboard output marker:
+
+```text
+=== DONE generate_supertrend_regime_discovery_dashboard ===
+warmup_bars=80
+Report: E:\2026\Leader_Lab\reports\supertrend_regime_discovery_dashboard.html
+```
+
+Visual validation checklist:
+
+```text
+1. The chart starts before 09:00 and includes prior/warmup candles.
+2. 09:00 is marked with a dotted vertical line.
+3. ST Up / ST Down lines are visible.
+4. The green ST regime shading aligns with the visible ST Up line.
+5. Strong early morning rise is no longer visually lost due to warm-up distortion.
+6. If ST segment still begins late, inspect whether the stored DB segment itself starts late.
+```
+
+---
+
+## 6. What was corrected conceptually
 
 ### Incorrect interpretation
 
@@ -41,7 +273,7 @@ SuperTrend was initially discussed too narrowly as:
 If SuperTrend turns down, sell.
 ```
 
-That is not the intended next research step.
+That is not the intended research step.
 
 ### Correct interpretation
 
@@ -68,7 +300,7 @@ st_up_max_return_pct
 
 ---
 
-## 3. Why this matters
+## 7. Why this matters
 
 Existing labels such as:
 
@@ -111,9 +343,9 @@ Did it have any high price before the end of day?
 
 ---
 
-## 4. Important conceptual rule
+## 8. Important conceptual rule
 
-Do not hard-code a magic timestamp such as 09:30 for this SuperTrend regime discovery.
+Do not hard-code a magic timestamp such as 09:30 for SuperTrend regime discovery.
 
 Time-aware WinnerScore v2 used decision timestamps such as:
 
@@ -153,72 +385,7 @@ that regime can be evaluated.
 
 ---
 
-## 5. Immediate next bundle
-
-The next implementation should be:
-
-```text
-SuperTrend Regime Discovery Bundle
-```
-
-Required files:
-
-```text
-docs/supertrend_regime_discovery_plan.md
-sql/create_supertrend_regime_discovery.sql
-src/analysis/build_supertrend_regime_discovery.py
-scripts/build_supertrend_regime_discovery.ps1
-src/review/generate_supertrend_regime_discovery_dashboard.py
-scripts/build_supertrend_regime_discovery_dashboard.ps1
-```
-
-Required tables:
-
-```text
-supertrend_regime_segment
-supertrend_regime_summary
-supertrend_regime_feature_summary
-```
-
-Required report:
-
-```text
-reports/supertrend_regime_discovery_dashboard.html
-```
-
----
-
-## 6. First universe for SuperTrend Regime Discovery
-
-Start with the current practical universe:
-
-```text
-condition-search captured stocks
-all available dates
-5-minute candles
-```
-
-Do not immediately expand to the full market. The current condition-search universe is already valuable because:
-
-```text
-1. It is the real operating universe.
-2. It contains fewer than about 50 candidates per day.
-3. It includes many actual large movers.
-4. It is already connected to analysis_5m_result and minute5_candles.
-```
-
-Later expansion can include:
-
-```text
-entire market universe
-1-minute candles
-3-minute candles
-sector universes
-```
-
----
-
-## 7. SuperTrend parameters to test first
+## 9. SuperTrend parameters to test first
 
 Use a controlled parameter set:
 
@@ -240,7 +407,7 @@ ST(14, 2.0) = user's familiar baseline
 
 ---
 
-## 8. Segment definition
+## 10. Required segment definition
 
 One row should represent:
 
@@ -268,7 +435,7 @@ already_up_at_capture = 1
 
 ---
 
-## 9. Required segment columns
+## 11. Required segment fields
 
 ### Identity
 
@@ -320,7 +487,7 @@ label_st_end_negative
 
 ---
 
-## 10. Required start-state features
+## 12. Required start-state features
 
 At ST uptrend segment start:
 
@@ -345,7 +512,7 @@ or was it already too overheated?
 
 ---
 
-## 11. Required internal segment features
+## 13. Required internal segment features
 
 During the ST uptrend segment:
 
@@ -367,7 +534,7 @@ or was it a weak/noisy ST flip?
 
 ---
 
-## 12. Good ST vs Bad ST comparison
+## 14. Good ST vs Bad ST comparison
 
 After extracting segments, classify:
 
@@ -399,42 +566,9 @@ The goal is to discover what makes a SuperTrend uptrend segment tradable.
 
 ---
 
-## 13. Dashboard requirements
+## 15. After chart verification is solved
 
-The dashboard must show:
-
-```text
-5-minute candlestick chart
-SuperTrend line
-ST uptrend segment shading
-ST up start marker
-ST up end marker
-ST segment max price marker
-st_up_max_return_pct
-st_up_end_return_pct
-st_up_bars
-start-state feature panel
-segment feature panel
-```
-
-Filters:
-
-```text
-ST parameter
-trade_date
-code/name
-Good ST >= 5%
-Great ST >= 10%
-Bad ST
-already_up_at_capture
-high overheat at start
-```
-
----
-
-## 14. How this connects later
-
-After SuperTrend Regime Discovery is complete, build:
+Only after the dashboard shows correct warm-up-based ST lines and segment shading, proceed to:
 
 ### 1. Good ST Segment Similarity Score
 
@@ -476,33 +610,50 @@ LLM final judgment
 
 ---
 
-## 15. Updated next-session instruction
+## 16. Updated next-session instruction
 
-If the next session starts from here, do not immediately implement more exit simulation.
+If the next session starts from here:
+
+```text
+Do not implement new strategy logic first.
+Do not start exit simulation first.
+Do not build Good ST Similarity Score first.
+```
 
 Start with:
 
 ```text
-SuperTrend Regime Discovery Bundle
+Fix and verify SuperTrend warm-up chart consistency.
 ```
 
-Then run:
+Recommended next-session commands:
 
 ```powershell
 cd E:\2026\Leader_Lab
 git pull
-```
 
-After implementation, expected commands should be:
-
-```powershell
 .\scripts\build_supertrend_regime_discovery.ps1
 .\scripts\build_supertrend_regime_discovery_dashboard.ps1
 ```
 
+Then visually inspect:
+
+```text
+reports/supertrend_regime_discovery_dashboard.html
+```
+
+If the dashboard still shows early strong rise excluded from ST segment:
+
+```text
+1. Compare DB st_up_start_time with visible ST Up line start.
+2. If DB start is late, fix analyzer segment extraction.
+3. If DB start is correct but chart is wrong, fix dashboard ST rendering.
+4. If both are correct but ST itself naturally starts late, then document this as a property of the selected ST parameter and evaluate faster parameters or 1-minute/3-minute timeframe later.
+```
+
 ---
 
-## 16. Final current conclusion
+## 17. Final current conclusion
 
 The current research stack is now:
 
@@ -511,10 +662,16 @@ Experiment Registry
 Winner Pattern Discovery
 Winner Feature Score v1
 Time-Aware Winner Feature Score v2
-SuperTrend Regime Discovery  <-- NEXT
+SuperTrend Regime Discovery  <-- IN PROGRESS, chart consistency pending
 Good ST Segment Similarity
 Regime-aware entry/exit strategy
 Macro/news/sector/LLM overlay
 ```
 
-This addendum records the pivot so the next session does not fall back into a narrow magic-time or magic-candle approach.
+The immediate next step is not strategy expansion.
+
+The immediate next step is:
+
+```text
+Make SuperTrend Regime Discovery visually trustworthy by aligning analyzer and dashboard warm-up logic.
+```
