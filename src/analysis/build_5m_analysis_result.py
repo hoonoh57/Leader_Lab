@@ -3,6 +3,11 @@
 
 Run:
     python -m src.analysis.build_5m_analysis_result --env .env --rebuild
+
+Design note:
+- This table is an intraday 5-minute validation table.
+- cached_count means the number of same-day 5-minute bars between 09:00 and 15:30.
+- Full Korean regular-session 5-minute cache is normally about 78 bars when the first bar is 09:05 and the last bar is 15:30.
 """
 
 from __future__ import annotations
@@ -40,19 +45,15 @@ def env_value(names: Sequence[str], default: Optional[str] = None) -> Optional[s
 
 
 def open_conn() -> Any:
-    host = env_value(["DB_HOST", "MYSQL_HOST"], "127.0.0.1")
-    port = int(env_value(["DB_PORT", "MYSQL_PORT"], "3306") or "3306")
-    user = env_value(["DB_USER", "MYSQL_USER"], "root")
-    password = env_value(["DB_PASS", "DB_PASSWORD", "MYSQL_PASSWORD", "MYSQL_PASS"], "")
     db_name = env_value(["DB_NAME", "MYSQL_DATABASE", "MYSQL_DB"])
     if db_name is None:
         raise RuntimeError(".env에 DB_NAME 또는 MYSQL_DATABASE가 필요합니다.")
 
     return pymysql.connect(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
+        host=env_value(["DB_HOST", "MYSQL_HOST"], "127.0.0.1"),
+        port=int(env_value(["DB_PORT", "MYSQL_PORT"], "3306") or "3306"),
+        user=env_value(["DB_USER", "MYSQL_USER"], "root"),
+        password=env_value(["DB_PASS", "DB_PASSWORD", "MYSQL_PASSWORD", "MYSQL_PASS"], ""),
         database=db_name,
         charset="utf8mb4",
         autocommit=False,
@@ -213,13 +214,12 @@ def build_meta(conn: Any) -> Dict[str, Dict[str, Optional[str]]]:
 def dt_expr(meta: Dict[str, Dict[str, Optional[str]]]) -> str:
     candle = meta["candle"]
     if candle["dt"] is not None:
-        return quote_name(candle["dt"])
+        return quote_name(str(candle["dt"]))
     return "TIMESTAMP(" + quote_name(str(candle["date"])) + ", " + quote_name(str(candle["time"])) + ")"
 
 
 def ensure_schema(conn: Any, rebuild: bool) -> None:
-    sql_path = Path("sql/create_analysis_5m_result.sql")
-    ddl = sql_path.read_text(encoding="utf-8-sig")
+    ddl = Path("sql/create_analysis_5m_result.sql").read_text(encoding="utf-8-sig")
     with conn.cursor() as cur:
         if rebuild:
             cur.execute("DROP TABLE IF EXISTS analysis_5m_result")
@@ -277,11 +277,17 @@ def fetch_day_candles(conn: Any, meta: Dict[str, Dict[str, Optional[str]]], code
 
 
 def history_grade(cached_count: int) -> str:
-    if cached_count >= 200:
-        return "normal"
-    if cached_count >= 80:
-        return "partial_but_usable"
-    return "weak_history"
+    """Classify same-day intraday coverage, not multi-day history.
+
+    Normal full day is usually 78 bars: 09:05, 09:10, ... 15:30.
+    """
+    if cached_count >= 75:
+        return "normal_intraday"
+    if cached_count >= 40:
+        return "partial_intraday"
+    if cached_count > 0:
+        return "weak_intraday"
+    return "missing_intraday"
 
 
 def capture_index(rows: List[Dict[str, Any]], capture_dt: datetime) -> int:
@@ -332,7 +338,7 @@ def analyze_one(conn: Any, meta: Dict[str, Dict[str, Optional[str]]], perf_row: 
         "cached_count": cached_count,
         "history_grade": grade,
         "valid_analysis_flag": 0,
-        "invalid_reason": "no_candles",
+        "invalid_reason": "no_same_day_candles",
     }
     if not rows:
         return result
@@ -367,8 +373,14 @@ def analyze_one(conn: Any, meta: Dict[str, Dict[str, Optional[str]]], perf_row: 
             min_time = row_time
 
     close_1530 = to_float(rows[-1]["close_price"])
-    valid = 1 if base_close is not None and base_close > 0 and len(after_rows) > 0 else 0
-    reason = None if valid == 1 else "invalid_capture_price_or_no_after_candles"
+    valid = 1
+    reason = None
+    if base_close is None or base_close <= 0:
+        valid = 0
+        reason = "invalid_capture_price"
+    elif len(after_rows) <= 0:
+        valid = 0
+        reason = "no_after_candles"
 
     result.update(
         {
@@ -434,51 +446,64 @@ def upsert(conn: Any, result: Dict[str, Any]) -> None:
         cur.execute(sql, result)
 
 
-def print_summary(conn: Any) -> None:
-    queries = [
-        ("summary", """
-            SELECT COUNT(*) AS rows_count,
-                   SUM(CASE WHEN valid_analysis_flag=1 THEN 1 ELSE 0 END) AS valid_rows,
-                   SUM(CASE WHEN valid_analysis_flag=0 THEN 1 ELSE 0 END) AS invalid_rows,
-                   MIN(search_date) AS first_date,
-                   MAX(search_date) AS last_date,
-                   AVG(max_after_return_pct) AS avg_max_after_return_pct,
-                   AVG(close_return_pct) AS avg_close_return_pct
-            FROM analysis_5m_result
-        """),
-        ("history_grade", """
-            SELECT history_grade,
-                   COUNT(*) AS rows_count,
-                   AVG(max_after_return_pct) AS avg_max_after_return_pct,
-                   AVG(close_return_pct) AS avg_close_return_pct
-            FROM analysis_5m_result
-            GROUP BY history_grade
-            ORDER BY rows_count DESC
-        """),
-        ("top20_max_after_return", """
-            SELECT search_date, search_time, code, name, capture_price, max_after_price,
-                   max_after_return_pct, close_return_pct, base_volume, base_amount,
-                   cum_volume_until_capture, cum_amount_until_capture, history_grade
-            FROM analysis_5m_result
-            WHERE valid_analysis_flag=1
-            ORDER BY max_after_return_pct DESC
-            LIMIT 20
-        """),
-        ("bottom20_close_return", """
-            SELECT search_date, search_time, code, name, capture_price, close_1530,
-                   close_return_pct, max_drawdown_pct, base_volume, base_amount, history_grade
-            FROM analysis_5m_result
-            WHERE valid_analysis_flag=1
-            ORDER BY close_return_pct ASC
-            LIMIT 20
-        """),
-    ]
+def print_query(conn: Any, title: str, sql: str) -> None:
+    print("\n=== " + title + " ===")
     with conn.cursor() as cur:
-        for title, sql in queries:
-            print("\n=== " + title + " ===")
-            cur.execute(sql)
-            for row in cur.fetchall():
-                print(row)
+        cur.execute(sql)
+        for row in cur.fetchall():
+            print(row)
+
+
+def print_summary(conn: Any) -> None:
+    print_query(conn, "summary", """
+        SELECT COUNT(*) AS rows_count,
+               SUM(CASE WHEN valid_analysis_flag=1 THEN 1 ELSE 0 END) AS valid_rows,
+               SUM(CASE WHEN valid_analysis_flag=0 THEN 1 ELSE 0 END) AS invalid_rows,
+               MIN(search_date) AS first_date,
+               MAX(search_date) AS last_date,
+               AVG(max_after_return_pct) AS avg_max_after_return_pct,
+               AVG(close_return_pct) AS avg_close_return_pct
+        FROM analysis_5m_result
+    """)
+    print_query(conn, "invalid_reason", """
+        SELECT invalid_reason, COUNT(*) AS rows_count
+        FROM analysis_5m_result
+        WHERE valid_analysis_flag=0
+        GROUP BY invalid_reason
+        ORDER BY rows_count DESC
+    """)
+    print_query(conn, "cached_count_distribution", """
+        SELECT cached_count, COUNT(*) AS rows_count
+        FROM analysis_5m_result
+        GROUP BY cached_count
+        ORDER BY cached_count
+    """)
+    print_query(conn, "history_grade", """
+        SELECT history_grade,
+               COUNT(*) AS rows_count,
+               AVG(max_after_return_pct) AS avg_max_after_return_pct,
+               AVG(close_return_pct) AS avg_close_return_pct
+        FROM analysis_5m_result
+        GROUP BY history_grade
+        ORDER BY rows_count DESC
+    """)
+    print_query(conn, "top20_max_after_return", """
+        SELECT search_date, search_time, code, name, capture_price, max_after_price,
+               max_after_return_pct, close_return_pct, base_volume, base_amount,
+               cum_volume_until_capture, cum_amount_until_capture, cached_count, history_grade
+        FROM analysis_5m_result
+        WHERE valid_analysis_flag=1
+        ORDER BY max_after_return_pct DESC
+        LIMIT 20
+    """)
+    print_query(conn, "bottom20_close_return", """
+        SELECT search_date, search_time, code, name, capture_price, close_1530,
+               close_return_pct, max_drawdown_pct, base_volume, base_amount, cached_count, history_grade
+        FROM analysis_5m_result
+        WHERE valid_analysis_flag=1
+        ORDER BY close_return_pct ASC
+        LIMIT 20
+    """)
 
 
 def print_meta(meta: Dict[str, Dict[str, Optional[str]]]) -> None:
