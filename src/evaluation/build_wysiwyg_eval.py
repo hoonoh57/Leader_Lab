@@ -3,10 +3,14 @@
 
 Goal:
 - Compare actual intraday leaders by max_after_return_pct with simple visible baselines.
-- Establish the current baseline before building LeaderScore.
+- Establish a non-leakage baseline before building LeaderScore.
 
 Run:
     python -m src.evaluation.build_wysiwyg_eval --env .env --rebuild
+
+Notes:
+- leakage_close_return_after uses close_return_pct and is NOT tradable at capture time.
+- It is available only when explicitly requested as a sanity/oracle-like reference.
 """
 
 from __future__ import annotations
@@ -117,40 +121,38 @@ def load_day_rows(conn: Any, eval_date: Any) -> List[Dict[str, Any]]:
         return list(cur.fetchall())
 
 
-def baseline_score(row: Dict[str, Any], baseline_name: str) -> Optional[float]:
+def scalar_score(row: Dict[str, Any], baseline_name: str) -> Optional[float]:
     if baseline_name == "base_amount":
         return to_float(row.get("base_amount"))
     if baseline_name == "base_volume":
         return to_float(row.get("base_volume"))
     if baseline_name == "cum_amount_until_capture":
         return to_float(row.get("cum_amount_until_capture"))
-    if baseline_name == "close_return_visible":
-        # Placeholder visible baseline: after table exists, replace with true 1516/rank/condition score.
+    if baseline_name == "leakage_close_return_after":
         return to_float(row.get("close_return_pct"))
-    raise RuntimeError("Unknown baseline: " + baseline_name)
+    raise RuntimeError("Unknown scalar baseline: " + baseline_name)
 
 
 def rank_rows(rows: List[Dict[str, Any]], key_name: str, descending: bool = True) -> Dict[str, int]:
-    filtered: List[Tuple[str, float]] = []
+    scored: List[Tuple[str, float]] = []
     for row in rows:
         value = to_float(row.get(key_name))
         code = str(row.get("code"))
-        if value is None:
-            continue
-        filtered.append((code, value))
-    filtered.sort(key=lambda item: (-item[1], item[0]) if descending else (item[1], item[0]))
+        if value is not None:
+            scored.append((code, value))
+    scored.sort(key=lambda item: (-item[1], item[0]) if descending else (item[1], item[0]))
     ranks: Dict[str, int] = {}
-    for idx, item in enumerate(filtered, start=1):
+    for idx, item in enumerate(scored, start=1):
         ranks[item[0]] = idx
     return ranks
 
 
-def rank_by_baseline(rows: List[Dict[str, Any]], baseline_name: str) -> Tuple[Dict[str, int], Dict[str, Optional[float]]]:
+def scalar_ranks(rows: List[Dict[str, Any]], baseline_name: str) -> Tuple[Dict[str, int], Dict[str, Optional[float]]]:
     scored: List[Tuple[str, float]] = []
     scores: Dict[str, Optional[float]] = {}
     for row in rows:
         code = str(row.get("code"))
-        value = baseline_score(row, baseline_name)
+        value = scalar_score(row, baseline_name)
         scores[code] = value
         if value is not None:
             scored.append((code, value))
@@ -159,6 +161,41 @@ def rank_by_baseline(rows: List[Dict[str, Any]], baseline_name: str) -> Tuple[Di
     for idx, item in enumerate(scored, start=1):
         ranks[item[0]] = idx
     return ranks, scores
+
+
+def rank_score_from_rank(rank_value: Optional[int], total_count: int) -> float:
+    if rank_value is None or total_count <= 0:
+        return 0.0
+    return float(total_count - rank_value + 1) / float(total_count)
+
+
+def liquidity_rank_mix(rows: List[Dict[str, Any]]) -> Tuple[Dict[str, int], Dict[str, Optional[float]]]:
+    volume_ranks, _ = scalar_ranks(rows, "base_volume")
+    amount_ranks, _ = scalar_ranks(rows, "base_amount")
+    total_count = len(rows)
+
+    scored: List[Tuple[str, float]] = []
+    scores: Dict[str, Optional[float]] = {}
+    for row in rows:
+        code = str(row.get("code"))
+        v_score = rank_score_from_rank(volume_ranks.get(code), total_count)
+        a_score = rank_score_from_rank(amount_ranks.get(code), total_count)
+        # Volume was empirically stronger than amount in the first run, so give it a larger weight.
+        score = (0.60 * v_score) + (0.40 * a_score)
+        scores[code] = score
+        scored.append((code, score))
+
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    ranks: Dict[str, int] = {}
+    for idx, item in enumerate(scored, start=1):
+        ranks[item[0]] = idx
+    return ranks, scores
+
+
+def rank_by_baseline(rows: List[Dict[str, Any]], baseline_name: str) -> Tuple[Dict[str, int], Dict[str, Optional[float]]]:
+    if baseline_name == "liquidity_rank_mix":
+        return liquidity_rank_mix(rows)
+    return scalar_ranks(rows, baseline_name)
 
 
 def upsert_detail(conn: Any, row: Dict[str, Any]) -> None:
@@ -177,23 +214,14 @@ def upsert_detail(conn: Any, row: Dict[str, Any]) -> None:
             %(in_actual_top10)s, %(in_baseline_top10)s, %(is_hit_top10)s
         )
         ON DUPLICATE KEY UPDATE
-            name=VALUES(name),
-            actual_rank=VALUES(actual_rank),
-            baseline_rank=VALUES(baseline_rank),
-            actual_max_after_return_pct=VALUES(actual_max_after_return_pct),
-            baseline_score=VALUES(baseline_score),
-            capture_price=VALUES(capture_price),
-            max_after_price=VALUES(max_after_price),
-            close_return_pct=VALUES(close_return_pct),
-            max_drawdown_pct=VALUES(max_drawdown_pct),
-            base_volume=VALUES(base_volume),
-            base_amount=VALUES(base_amount),
-            cum_amount_until_capture=VALUES(cum_amount_until_capture),
-            history_grade=VALUES(history_grade),
-            in_actual_top10=VALUES(in_actual_top10),
-            in_baseline_top10=VALUES(in_baseline_top10),
-            is_hit_top10=VALUES(is_hit_top10),
-            updated_at=CURRENT_TIMESTAMP
+            name=VALUES(name), actual_rank=VALUES(actual_rank), baseline_rank=VALUES(baseline_rank),
+            actual_max_after_return_pct=VALUES(actual_max_after_return_pct), baseline_score=VALUES(baseline_score),
+            capture_price=VALUES(capture_price), max_after_price=VALUES(max_after_price),
+            close_return_pct=VALUES(close_return_pct), max_drawdown_pct=VALUES(max_drawdown_pct),
+            base_volume=VALUES(base_volume), base_amount=VALUES(base_amount),
+            cum_amount_until_capture=VALUES(cum_amount_until_capture), history_grade=VALUES(history_grade),
+            in_actual_top10=VALUES(in_actual_top10), in_baseline_top10=VALUES(in_baseline_top10),
+            is_hit_top10=VALUES(is_hit_top10), updated_at=CURRENT_TIMESTAMP
     """
     with conn.cursor() as cur:
         cur.execute(sql, row)
@@ -211,16 +239,11 @@ def upsert_summary(conn: Any, row: Dict[str, Any]) -> None:
             %(label10_rate)s, %(avg_selected_max_return_pct)s, %(avg_actual_top10_return_pct)s
         )
         ON DUPLICATE KEY UPDATE
-            eligible_rows=VALUES(eligible_rows),
-            actual_top10_count=VALUES(actual_top10_count),
-            hit_at_1=VALUES(hit_at_1),
-            hit_at_3=VALUES(hit_at_3),
-            hit_at_5=VALUES(hit_at_5),
-            hit_at_10=VALUES(hit_at_10),
-            label10_rate=VALUES(label10_rate),
+            eligible_rows=VALUES(eligible_rows), actual_top10_count=VALUES(actual_top10_count),
+            hit_at_1=VALUES(hit_at_1), hit_at_3=VALUES(hit_at_3), hit_at_5=VALUES(hit_at_5),
+            hit_at_10=VALUES(hit_at_10), label10_rate=VALUES(label10_rate),
             avg_selected_max_return_pct=VALUES(avg_selected_max_return_pct),
-            avg_actual_top10_return_pct=VALUES(avg_actual_top10_return_pct),
-            updated_at=CURRENT_TIMESTAMP
+            avg_actual_top10_return_pct=VALUES(avg_actual_top10_return_pct), updated_at=CURRENT_TIMESTAMP
     """
     with conn.cursor() as cur:
         cur.execute(sql, row)
@@ -233,13 +256,17 @@ def avg(values: List[Optional[float]]) -> Optional[float]:
     return sum(filtered) / float(len(filtered))
 
 
+def topn_set(ranks: Dict[str, int], n: int) -> set[str]:
+    return {code for code, rank in ranks.items() if rank <= n}
+
+
 def build_for_date(conn: Any, eval_date: Any, baselines: List[str]) -> None:
     rows = load_day_rows(conn, eval_date)
     if not rows:
         return
 
     actual_ranks = rank_rows(rows, "max_after_return_pct", True)
-    actual_top10 = {code for code, rank in actual_ranks.items() if rank <= 10}
+    actual_top10 = topn_set(actual_ranks, 10)
     actual_top10_returns: List[Optional[float]] = []
     for row in rows:
         code = str(row.get("code"))
@@ -248,7 +275,7 @@ def build_for_date(conn: Any, eval_date: Any, baselines: List[str]) -> None:
 
     for baseline_name in baselines:
         baseline_ranks, scores = rank_by_baseline(rows, baseline_name)
-        baseline_top10 = {code for code, rank in baseline_ranks.items() if rank <= 10}
+        baseline_top10 = topn_set(baseline_ranks, 10)
         hits = actual_top10.intersection(baseline_top10)
 
         selected_returns: List[Optional[float]] = []
@@ -262,9 +289,9 @@ def build_for_date(conn: Any, eval_date: Any, baselines: List[str]) -> None:
             "eligible_rows": len(rows),
             "actual_top10_count": len(actual_top10),
             "baseline_name": baseline_name,
-            "hit_at_1": len({code for code, rank in baseline_ranks.items() if rank <= 1}.intersection(actual_top10)),
-            "hit_at_3": len({code for code, rank in baseline_ranks.items() if rank <= 3}.intersection(actual_top10)),
-            "hit_at_5": len({code for code, rank in baseline_ranks.items() if rank <= 5}.intersection(actual_top10)),
+            "hit_at_1": len(topn_set(baseline_ranks, 1).intersection(actual_top10)),
+            "hit_at_3": len(topn_set(baseline_ranks, 3).intersection(actual_top10)),
+            "hit_at_5": len(topn_set(baseline_ranks, 5).intersection(actual_top10)),
             "hit_at_10": len(hits),
             "label10_rate": len(hits) / 10.0 if len(actual_top10) >= 10 else (len(hits) / float(len(actual_top10)) if actual_top10 else None),
             "avg_selected_max_return_pct": avg(selected_returns),
@@ -319,17 +346,23 @@ def print_summary(conn: Any) -> None:
             GROUP BY baseline_name
             ORDER BY avg_hit_at_10 DESC, avg_selected_max_return_pct DESC
         """),
-        ("best daily hits", """
-            SELECT eval_date, baseline_name, eligible_rows, hit_at_10, label10_rate,
-                   avg_selected_max_return_pct, avg_actual_top10_return_pct
+        ("tradable baseline summary only", """
+            SELECT baseline_name,
+                   COUNT(*) AS trading_days,
+                   AVG(hit_at_10) AS avg_hit_at_10,
+                   AVG(label10_rate) AS avg_label10_rate,
+                   AVG(avg_selected_max_return_pct) AS avg_selected_max_return_pct,
+                   AVG(avg_actual_top10_return_pct) AS avg_actual_top10_return_pct
             FROM wysiwyg_eval_daily_summary
-            ORDER BY hit_at_10 DESC, avg_selected_max_return_pct DESC
-            LIMIT 30
+            WHERE baseline_name NOT LIKE 'leakage_%'
+            GROUP BY baseline_name
+            ORDER BY avg_hit_at_10 DESC, avg_selected_max_return_pct DESC
         """),
-        ("worst daily hits", """
+        ("worst tradable daily hits", """
             SELECT eval_date, baseline_name, eligible_rows, hit_at_10, label10_rate,
                    avg_selected_max_return_pct, avg_actual_top10_return_pct
             FROM wysiwyg_eval_daily_summary
+            WHERE baseline_name NOT LIKE 'leakage_%'
             ORDER BY hit_at_10 ASC, avg_selected_max_return_pct ASC
             LIMIT 30
         """),
@@ -346,12 +379,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", default=".env")
     parser.add_argument("--rebuild", action="store_true")
-    parser.add_argument("--baselines", default="base_amount,base_volume,cum_amount_until_capture,close_return_visible")
+    parser.add_argument("--baselines", default="base_volume,base_amount,cum_amount_until_capture,liquidity_rank_mix")
+    parser.add_argument("--include-leakage", action="store_true")
     parser.add_argument("--commit-every", type=int, default=10)
     args = parser.parse_args()
 
     load_env(args.env)
     baselines = [item.strip() for item in args.baselines.split(",") if item.strip()]
+    if args.include_leakage and "leakage_close_return_after" not in baselines:
+        baselines.append("leakage_close_return_after")
+
     conn = open_conn()
     try:
         ensure_schema(conn, args.rebuild)
