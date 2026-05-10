@@ -4,6 +4,41 @@
 
 The primary objective is not simple average-return optimization. The objective is to determine whether a reproducible `LeaderScore` can rank daily 1516 candidates so that the score Top5/Top10 overlaps strongly with the actual `max_ret_in_period` Top5/Top10.
 
+## Current Research Position
+
+The current stack is fixed as follows:
+
+```text
+Experiment Registry
+→ Winner Pattern Discovery
+→ Winner Feature Score v1
+→ Time-Aware Winner Feature Score v2
+→ SuperTrend Regime Discovery
+→ Chart Consistency Gate  ← current pending gate
+→ Good ST Segment Similarity
+→ Regime-aware entry/exit strategy
+→ Macro/news/sector/LLM overlay
+```
+
+Important: do not proceed to entry/exit strategy design until the `Chart Consistency Gate` passes.
+
+Current SuperTrend Regime Discovery output has been generated with:
+
+```text
+targets=2622
+params=(7,1.5), (7,2.0), (10,2.0), (14,2.0)
+warmup_bars=80
+segments=25070
+report=reports/supertrend_regime_discovery_dashboard.html
+```
+
+The next required implementation is to modify the dashboard so that the selected SuperTrend parameter draws actual `ST Up` and `ST Down` lines on the chart, not only DB segment shading.
+
+See:
+
+- [`docs/supertrend_chart_consistency_gate.md`](docs/supertrend_chart_consistency_gate.md)
+- [`todo_list.md`](todo_list.md)
+
 ## Core Target
 
 For each search date/time:
@@ -38,6 +73,8 @@ This repository stores only:
 - tests
 - report templates
 - finalized score YAML versions
+- research handoff documents
+- dashboard consistency specifications
 
 It does not store:
 
@@ -59,6 +96,30 @@ copy .env.example .env
 .\scripts\download_minute5_cache.ps1
 .\scripts\run_leader_lab.ps1
 ```
+
+## Current SuperTrend Consistency Flow
+
+After pulling the latest docs/code, run:
+
+```powershell
+cd E:\2026\Leader_Lab
+git pull
+.\scripts\build_supertrend_regime_discovery.ps1
+.\scripts\build_supertrend_regime_discovery_dashboard.ps1
+start .\reports\supertrend_regime_discovery_dashboard.html
+```
+
+The dashboard must be upgraded/verified so that:
+
+```text
+1. 09:00 이전 warmup 봉 포함 여부가 보인다.
+2. 09:00 기준선이 보인다.
+3. 선택 ST 파라미터 기준 ST Up / ST Down 선이 보인다.
+4. DB segment shade가 ST Up line과 일치하는지 확인 가능하다.
+5. 장초반 강한 상승구간이 warmup 부족 때문에 누락되지 않는지 확인 가능하다.
+```
+
+Only after this gate passes should the project move to `Good ST Segment Similarity`.
 
 ## Development Phases
 
