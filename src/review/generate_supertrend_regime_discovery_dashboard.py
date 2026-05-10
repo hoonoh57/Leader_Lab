@@ -4,6 +4,11 @@
 This dashboard visualizes extracted SuperTrend uptrend segments as regime labels.
 It is not a trading simulator. It is a chart-review tool for Good/Bad ST regime discovery.
 
+Important:
+    The chart must display the same SuperTrend parameter selected in the dashboard.
+    The chart must include prior intraday warm-up candles so that early-session ST
+    transitions can be visually verified.
+
 Output:
     reports/supertrend_regime_discovery_dashboard.html
 """
@@ -20,6 +25,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pymysql
+
+from src.analysis.build_supertrend_regime_discovery import calculate_supertrend
+
+
+DEFAULT_WARMUP_BARS = 80
 
 
 def load_env(env_path: str) -> None:
@@ -86,6 +96,36 @@ def to_float(value: Any) -> Optional[float]:
     return result
 
 
+def to_int(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, Decimal):
+        return int(value)
+    try:
+        return int(float(value))
+    except Exception:
+        return 0
+
+
+def amount_from_ohlcv(row: Dict[str, Any]) -> Optional[float]:
+    o = to_float(row.get("open_price"))
+    h = to_float(row.get("high_price"))
+    l = to_float(row.get("low_price"))
+    c = to_float(row.get("close_price"))
+    v = to_float(row.get("volume"))
+    if o is None or h is None or l is None or c is None or v is None:
+        return None
+    return ((o + h + l + c) / 4.0) * v
+
+
+def param_key(period: Any, multiplier: Any) -> str:
+    return str(int(period)) + ":" + f"{float(multiplier):.1f}"
+
+
+def chart_key(trade_date: Any, code: Any, period: Any, multiplier: Any) -> str:
+    return str(trade_date) + "|" + str(code) + "|" + param_key(period, multiplier)
+
+
 def load_segments(conn: Any, limit: int) -> List[Dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
@@ -149,41 +189,96 @@ def load_feature_summary(conn: Any) -> List[Dict[str, Any]]:
         return list(cur.fetchall())
 
 
-def load_candles_for_segments(conn: Any, segments: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+def query_warmup_plus_day_rows(conn: Any, trade_date: Any, code: str, warmup_bars: int) -> Tuple[List[Dict[str, Any]], int]:
+    current_start = datetime.combine(trade_date, time(9, 0, 0))
+    current_end = datetime.combine(trade_date, time(15, 30, 0))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT candle_time AS candle_time,
+                   open AS open_price,
+                   high AS high_price,
+                   low AS low_price,
+                   close AS close_price,
+                   volume AS volume
+            FROM minute5_candles
+            WHERE code=%s
+              AND candle_time < %s
+            ORDER BY candle_time DESC
+            LIMIT %s
+            """,
+            (code, current_start, warmup_bars),
+        )
+        prev_rows = list(cur.fetchall())
+        prev_rows.reverse()
+        cur.execute(
+            """
+            SELECT candle_time AS candle_time,
+                   open AS open_price,
+                   high AS high_price,
+                   low AS low_price,
+                   close AS close_price,
+                   volume AS volume
+            FROM minute5_candles
+            WHERE code=%s
+              AND candle_time >= %s
+              AND candle_time <= %s
+            ORDER BY candle_time
+            """,
+            (code, current_start, current_end),
+        )
+        day_rows = list(cur.fetchall())
+    return prev_rows + day_rows, len(prev_rows)
+
+
+def decorate_chart_rows(rows: List[Dict[str, Any]], prev_count: int, period: int, multiplier: float) -> List[Dict[str, Any]]:
+    st_line, direction = calculate_supertrend(rows, period, multiplier)
+    result: List[Dict[str, Any]] = []
+    for i, row in enumerate(rows):
+        st_value = to_float(st_line[i]) if i < len(st_line) else None
+        st_dir = int(direction[i]) if i < len(direction) else 0
+        item: Dict[str, Any] = {
+            "t": row.get("candle_time"),
+            "o": to_float(row.get("open_price")),
+            "h": to_float(row.get("high_price")),
+            "l": to_float(row.get("low_price")),
+            "c": to_float(row.get("close_price")),
+            "v": to_int(row.get("volume")),
+            "amount": amount_from_ohlcv(row),
+            "st_value": st_value,
+            "st_dir": st_dir,
+            "st_up": st_value if st_dir == 1 else None,
+            "st_down": st_value if st_dir == -1 else None,
+            "is_warmup": 1 if i < prev_count else 0,
+            "is_after_0900": 0 if i < prev_count else 1,
+        }
+        result.append(item)
+    return result
+
+
+def load_candles_for_segments(conn: Any, segments: List[Dict[str, Any]], warmup_bars: int) -> Dict[str, List[Dict[str, Any]]]:
     grouped: Dict[str, List[Dict[str, Any]]] = {}
+    raw_cache: Dict[str, Tuple[List[Dict[str, Any]], int]] = {}
     seen = set()
     for seg in segments:
         trade_date = seg.get("trade_date")
         code = str(seg.get("code"))
-        key = str(trade_date) + "|" + code
-        if key in seen:
+        period = int(seg.get("st_period"))
+        multiplier = float(seg.get("st_multiplier"))
+        ckey = chart_key(trade_date, code, period, multiplier)
+        if ckey in seen:
             continue
-        seen.add(key)
-        start_dt = datetime.combine(trade_date, time(9, 0, 0))
-        end_dt = datetime.combine(trade_date, time(15, 30, 0))
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT candle_time AS t,
-                       open AS o,
-                       high AS h,
-                       low AS l,
-                       close AS c,
-                       volume AS v
-                FROM minute5_candles
-                WHERE code=%s
-                  AND candle_time >= %s
-                  AND candle_time <= %s
-                ORDER BY candle_time
-                """,
-                (code, start_dt, end_dt),
-            )
-            grouped[key] = list(cur.fetchall())
+        seen.add(ckey)
+        raw_key = str(trade_date) + "|" + code
+        if raw_key not in raw_cache:
+            raw_cache[raw_key] = query_warmup_plus_day_rows(conn, trade_date, code, warmup_bars)
+        rows, prev_count = raw_cache[raw_key]
+        grouped[ckey] = decorate_chart_rows(rows, prev_count, period, multiplier)
     return grouped
 
 
-def build_html(segments: List[Dict[str, Any]], candles: Dict[str, List[Dict[str, Any]]], summary: List[Dict[str, Any]], feature_summary: List[Dict[str, Any]]) -> str:
-    data_json = json.dumps({"segments": segments, "candles": candles, "summary": summary, "featureSummary": feature_summary}, ensure_ascii=False, default=json_default)
+def build_html(segments: List[Dict[str, Any]], candles: Dict[str, List[Dict[str, Any]]], summary: List[Dict[str, Any]], feature_summary: List[Dict[str, Any]], warmup_bars: int) -> str:
+    data_json = json.dumps({"segments": segments, "candles": candles, "summary": summary, "featureSummary": feature_summary, "warmupBars": warmup_bars}, ensure_ascii=False, default=json_default)
     return """<!doctype html>
 <html lang="ko">
 <head>
@@ -205,13 +300,15 @@ def build_html(segments: List[Dict[str, Any]], candles: Dict[str, List[Dict[str,
     .seg.active { background:#334155; }
     .seg .title { font-weight:700; font-size:13px; }
     .seg .meta { font-size:12px; color:#cbd5e1; margin-top:4px; line-height:1.45; }
-    .good { color:#86efac; } .bad { color:#fca5a5; } .warn { color:#fde68a; }
+    .good { color:#86efac; } .bad { color:#fca5a5; } .warn { color:#fde68a; } .info { color:#93c5fd; }
     .pill { display:inline-block; padding:2px 6px; border-radius:999px; background:#1f2937; margin-right:4px; font-size:11px; }
     .panel { display:grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap:8px; margin-bottom:10px; }
     .card { background:#0f172a; border:1px solid #334155; border-radius:10px; padding:10px; }
     .card .k { font-size:11px; color:#94a3b8; }
     .card .v { font-size:16px; font-weight:700; margin-top:3px; }
-    #chart { height:620px; background:#0f172a; border:1px solid #334155; border-radius:10px; }
+    .gate-pass { color:#86efac; }
+    .gate-fail { color:#fca5a5; }
+    #chart { height:680px; background:#0f172a; border:1px solid #334155; border-radius:10px; }
     #volume { height:180px; background:#0f172a; border:1px solid #334155; border-radius:10px; margin-top:10px; }
     table { border-collapse:collapse; width:100%; font-size:12px; background:#0f172a; margin-bottom:12px; }
     th,td { border:1px solid #334155; padding:5px 6px; text-align:right; }
@@ -252,11 +349,14 @@ const segments = DATA.segments;
 const candles = DATA.candles;
 const summary = DATA.summary;
 const featureSummary = DATA.featureSummary;
+const warmupBars = DATA.warmupBars || 80;
 let selectedId = null;
 function fmt(v, d=2){ if(v===null || v===undefined || isNaN(Number(v))) return '-'; return Number(v).toFixed(d); }
-function keyOf(s){ return s.trade_date + '|' + s.code; }
 function paramOf(s){ return `${s.st_period}:${Number(s.st_multiplier).toFixed(1)}`; }
+function keyOf(s){ return s.trade_date + '|' + s.code + '|' + paramOf(s); }
 function unique(arr){ return Array.from(new Set(arr)); }
+function tsDatePart(ts){ return String(ts || '').slice(0,10); }
+function marketOpenTs(s){ return s.trade_date + 'T09:00:00'; }
 function initFilters(){
   const params = unique(segments.map(paramOf)).sort();
   paramSelect.innerHTML = params.map(p=>`<option>${p}</option>`).join('');
@@ -317,8 +417,29 @@ function renderList(){
   if(list.length && !list.some(s=>s.id===selectedId)) selectSegment(list[0].id, false);
 }
 function selectSegment(id, rerender=true){ selectedId = id; const s = segments.find(x=>x.id===id); if(!s) return; renderInfo(s); renderChart(s); if(rerender) renderList(); }
+function consistencyFor(s, arr){
+  const hasWarmup = arr.some(r=>Number(r.is_warmup)===1);
+  const firstTs = arr.length ? arr[0].t : null;
+  const hasStUp = arr.some(r=>r.st_up !== null && r.st_up !== undefined);
+  const hasStDown = arr.some(r=>r.st_down !== null && r.st_down !== undefined);
+  const startHit = arr.some(r=>String(r.t) === String(s.st_up_start_time) && r.st_up !== null && r.st_up !== undefined);
+  const endHit = arr.some(r=>String(r.t) === String(s.st_up_end_time) && r.st_up !== null && r.st_up !== undefined);
+  let fail = [];
+  if(!hasWarmup) fail.push('NO_WARMUP');
+  if(!hasStUp) fail.push('NO_ST_UP');
+  if(!hasStDown) fail.push('NO_ST_DOWN');
+  if(!startHit) fail.push('START_MISMATCH');
+  if(!endHit) fail.push('END_MISMATCH');
+  const earlyRisk = (!hasWarmup || String(s.st_up_start_time).slice(11,16) <= '09:30') ? (hasWarmup ? 'CHECK' : 'HIGH') : 'LOW';
+  return {hasWarmup, firstTs, hasStUp, hasStDown, startHit, endHit, earlyRisk, pass: fail.length===0, failReason: fail.join(', ')};
+}
 function renderInfo(s){
+  const arr = candles[keyOf(s)] || [];
+  const gate = consistencyFor(s, arr);
+  const gateClass = gate.pass ? 'gate-pass' : 'gate-fail';
   const items = [
+    ['Chart Consistency', `<span class="${gateClass}">${gate.pass ? 'PASS' : 'CHECK/FAIL'}</span> / ${gate.failReason || 'OK'} / Early ${gate.earlyRisk}`],
+    ['Warmup/ST', `first ${gate.firstTs || '-'} / warmup ${gate.hasWarmup ? 'OK' : 'NO'} / ST up ${gate.hasStUp ? 'OK' : 'NO'} / down ${gate.hasStDown ? 'OK' : 'NO'}`],
     ['Segment', `${s.trade_date} ${s.code} ${s.name||''} / ST ${paramOf(s)} / #${s.segment_no}`],
     ['Outcome', `max ${fmt(s.st_up_max_return_pct)}% / end ${fmt(s.st_up_end_return_pct)}% / dd ${fmt(s.st_up_max_drawdown_pct)}% / bars ${s.st_up_bars}`],
     ['Times', `${s.st_up_start_time} → ${s.st_up_end_time}`],
@@ -334,18 +455,36 @@ function renderChart(s){
   const arr = candles[keyOf(s)] || [];
   const x = arr.map(r=>r.t);
   const open = arr.map(r=>Number(r.o)); const high = arr.map(r=>Number(r.h)); const low = arr.map(r=>Number(r.l)); const close = arr.map(r=>Number(r.c)); const vol = arr.map(r=>Number(r.v));
+  const stUp = arr.map(r=>r.st_up === null || r.st_up === undefined ? null : Number(r.st_up));
+  const stDown = arr.map(r=>r.st_down === null || r.st_down === undefined ? null : Number(r.st_down));
   const shapes = [];
-  if(s.st_up_start_time && s.st_up_end_time){ shapes.push({type:'rect', xref:'x', yref:'paper', x0:s.st_up_start_time, x1:s.st_up_end_time, y0:0, y1:1, fillcolor:'rgba(34,197,94,0.12)', line:{width:0}}); }
-  if(s.capture_time){ shapes.push({type:'line', xref:'x', x0:s.capture_time, x1:s.capture_time, yref:'paper', y0:0, y1:1, line:{width:1, dash:'dot'}}); }
-  if(s.st_up_start_time){ shapes.push({type:'line', xref:'x', x0:s.st_up_start_time, x1:s.st_up_start_time, yref:'paper', y0:0, y1:1, line:{width:2, dash:'dash'}}); }
-  if(s.st_up_end_time){ shapes.push({type:'line', xref:'x', x0:s.st_up_end_time, x1:s.st_up_end_time, yref:'paper', y0:0, y1:1, line:{width:2, dash:'dashdot'}}); }
+  const annotations = [];
+  const openTs = marketOpenTs(s);
+  if(arr.length > 0){
+    shapes.push({type:'rect', xref:'x', yref:'paper', x0:arr[0].t, x1:openTs, y0:0, y1:1, fillcolor:'rgba(148,163,184,0.10)', line:{width:0}, layer:'below'});
+    annotations.push({xref:'x', yref:'paper', x:arr[0].t, y:1, text:'warmup', showarrow:false, font:{size:11}});
+  }
+  shapes.push({type:'line', xref:'x', x0:openTs, x1:openTs, yref:'paper', y0:0, y1:1, line:{width:2, dash:'dot', color:'#fbbf24'}});
+  annotations.push({xref:'x', yref:'paper', x:openTs, y:1, text:'09:00', showarrow:false, yanchor:'bottom', font:{size:12, color:'#fbbf24'}});
+  if(s.st_up_start_time && s.st_up_end_time){ shapes.push({type:'rect', xref:'x', yref:'paper', x0:s.st_up_start_time, x1:s.st_up_end_time, y0:0, y1:1, fillcolor:'rgba(34,197,94,0.14)', line:{width:0}, layer:'below'}); }
+  if(s.capture_time){ shapes.push({type:'line', xref:'x', x0:s.capture_time, x1:s.capture_time, yref:'paper', y0:0, y1:1, line:{width:1, dash:'dot', color:'#93c5fd'}}); }
+  if(s.st_up_start_time){ shapes.push({type:'line', xref:'x', x0:s.st_up_start_time, x1:s.st_up_start_time, yref:'paper', y0:0, y1:1, line:{width:2, dash:'dash', color:'#22c55e'}}); }
+  if(s.st_up_end_time){ shapes.push({type:'line', xref:'x', x0:s.st_up_end_time, x1:s.st_up_end_time, yref:'paper', y0:0, y1:1, line:{width:2, dash:'dashdot', color:'#ef4444'}}); }
+  if(arr.length > 0){
+    const firstDay = arr.find(r=>Number(r.is_warmup)!==1);
+    if(firstDay && firstDay.o !== null && firstDay.o !== undefined){
+      shapes.push({type:'line', xref:'x', x0:x[0], x1:x[x.length-1], yref:'y', y0:Number(firstDay.o), y1:Number(firstDay.o), line:{width:1, dash:'dot', color:'#a78bfa'}});
+    }
+  }
   const traces = [
     {type:'candlestick', x, open, high, low, close, name:'5m'},
-    {type:'scatter', mode:'markers+text', x:[s.st_up_start_time], y:[Number(s.st_up_start_price)], text:['ST Start'], textposition:'bottom center', marker:{size:11}, name:'ST Start'},
-    {type:'scatter', mode:'markers+text', x:[s.st_up_end_time], y:[Number(s.st_up_end_price)], text:['ST End'], textposition:'bottom center', marker:{size:11}, name:'ST End'},
-    {type:'scatter', mode:'markers+text', x:[s.st_up_start_time], y:[Number(s.st_up_max_price)], text:[`Max ${fmt(s.st_up_max_return_pct)}%`], textposition:'top center', marker:{size:12}, name:'ST Max'}
+    {type:'scatter', x, y:stUp, mode:'lines', name:'ST Up', connectgaps:false, line:{width:2, color:'#22c55e'}},
+    {type:'scatter', x, y:stDown, mode:'lines', name:'ST Down', connectgaps:false, line:{width:2, color:'#f97316'}},
+    {type:'scatter', mode:'markers+text', x:[s.st_up_start_time], y:[Number(s.st_up_start_price)], text:['ST Start'], textposition:'bottom center', marker:{size:11, color:'#f59e0b'}, name:'ST Start'},
+    {type:'scatter', mode:'markers+text', x:[s.st_up_end_time], y:[Number(s.st_up_end_price)], text:['ST End'], textposition:'bottom center', marker:{size:11, color:'#22c55e'}, name:'ST End'},
+    {type:'scatter', mode:'markers+text', x:[s.st_up_start_time], y:[Number(s.st_up_max_price)], text:[`Max ${fmt(s.st_up_max_return_pct)}%`], textposition:'top center', marker:{size:12, color:'#ef4444'}, name:'ST Max'}
   ];
-  Plotly.react('chart', traces, {paper_bgcolor:'#0f172a', plot_bgcolor:'#0f172a', font:{color:'#e5e7eb'}, xaxis:{rangeslider:{visible:false}}, yaxis:{title:'Price'}, shapes, margin:{l:50,r:20,t:28,b:40}}, {responsive:true});
+  Plotly.react('chart', traces, {paper_bgcolor:'#0f172a', plot_bgcolor:'#0f172a', font:{color:'#e5e7eb'}, xaxis:{rangeslider:{visible:false}}, yaxis:{title:'Price'}, shapes, annotations, margin:{l:50,r:20,t:28,b:40}}, {responsive:true});
   Plotly.react('volume', [{type:'bar', x, y:vol, name:'volume'}], {paper_bgcolor:'#0f172a', plot_bgcolor:'#0f172a', font:{color:'#e5e7eb'}, margin:{l:50,r:20,t:20,b:40}, yaxis:{title:'Volume'}}, {responsive:true});
 }
 initFilters();
@@ -359,6 +498,7 @@ def main() -> int:
     parser.add_argument("--env", default=".env")
     parser.add_argument("--output", default="reports/supertrend_regime_discovery_dashboard.html")
     parser.add_argument("--limit", type=int, default=12000)
+    parser.add_argument("--warmup-bars", type=int, default=DEFAULT_WARMUP_BARS)
     args = parser.parse_args()
     load_env(args.env)
     conn = open_conn()
@@ -366,13 +506,14 @@ def main() -> int:
         segments = load_segments(conn, args.limit)
         summary = load_summary(conn)
         feature_summary = load_feature_summary(conn)
-        candles = load_candles_for_segments(conn, segments)
+        candles = load_candles_for_segments(conn, segments, args.warmup_bars)
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(build_html(segments, candles, summary, feature_summary), encoding="utf-8")
+        out.write_text(build_html(segments, candles, summary, feature_summary, args.warmup_bars), encoding="utf-8")
         print("=== DONE generate_supertrend_regime_discovery_dashboard ===")
         print("segments=" + str(len(segments)))
         print("candles_groups=" + str(len(candles)))
+        print("warmup_bars=" + str(args.warmup_bars))
         print("output=" + str(out.resolve()))
         return 0
     finally:
