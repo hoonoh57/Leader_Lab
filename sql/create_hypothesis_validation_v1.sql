@@ -1,0 +1,97 @@
+CREATE TABLE IF NOT EXISTS hypothesis_validation_v1_result (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+    search_date DATE NOT NULL,
+    search_time TIME NOT NULL,
+    code VARCHAR(20) NOT NULL,
+    name VARCHAR(100) NULL,
+
+    actual_rank INT NULL,
+    in_actual_top10 TINYINT NOT NULL DEFAULT 0,
+    actual_max_after_return_pct DOUBLE NULL,
+
+    has_singlebar_close5 TINYINT NOT NULL DEFAULT 0,
+    singlebar_time DATETIME NULL,
+    singlebar_open DOUBLE NULL,
+    singlebar_high DOUBLE NULL,
+    singlebar_low DOUBLE NULL,
+    singlebar_close DOUBLE NULL,
+    singlebar_volume BIGINT NULL,
+    singlebar_amount DOUBLE NULL,
+    singlebar_close_return_pct DOUBLE NULL,
+    singlebar_high_return_pct DOUBLE NULL,
+
+    break_time DATETIME NULL,
+    break_type VARCHAR(40) NULL,
+    break_price DOUBLE NULL,
+    break_open DOUBLE NULL,
+    break_high DOUBLE NULL,
+    break_low DOUBLE NULL,
+    break_close DOUBLE NULL,
+    break_volume BIGINT NULL,
+    break_amount DOUBLE NULL,
+    bars_to_break INT NULL,
+
+    break_volume_gt_base TINYINT NOT NULL DEFAULT 0,
+    break_rsi14 DOUBLE NULL,
+    break_rsi14_prev DOUBLE NULL,
+    break_rsi_gt_60 TINYINT NOT NULL DEFAULT 0,
+    break_rsi_rising TINYINT NOT NULL DEFAULT 0,
+    break_ma10 DOUBLE NULL,
+    break_ma10_prev DOUBLE NULL,
+    break_close_gt_ma10 TINYINT NOT NULL DEFAULT 0,
+    break_close_cross_ma10 TINYINT NOT NULL DEFAULT 0,
+
+    h5m1_singlebar5_break_volume TINYINT NOT NULL DEFAULT 0,
+    h5m2_singlebar5_break_rsi TINYINT NOT NULL DEFAULT 0,
+    h5m3_singlebar5_break_ma10 TINYINT NOT NULL DEFAULT 0,
+
+    break_after_max_time DATETIME NULL,
+    break_after_max_price DOUBLE NULL,
+    break_after_max_return_pct DOUBLE NULL,
+    break_after_close_return_pct DOUBLE NULL,
+    break_after_max_drawdown_pct DOUBLE NULL,
+
+    has_daily_context TINYINT NOT NULL DEFAULT 0,
+    d1_prev5_up10_high_break_5m3 TINYINT NOT NULL DEFAULT 0,
+    d2_prev10_high20_closeup_5d_highvol TINYINT NOT NULL DEFAULT 0,
+    daily_reason VARCHAR(255) NULL,
+
+    valid_flag TINYINT NOT NULL DEFAULT 1,
+    invalid_reason VARCHAR(255) NULL,
+    history_grade VARCHAR(30) NULL,
+
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_hypothesis_v1 (search_date, search_time, code),
+    KEY ix_hypothesis_v1_date (search_date),
+    KEY ix_hypothesis_v1_code (code),
+    KEY ix_hypothesis_v1_actual_rank (actual_rank),
+    KEY ix_hypothesis_v1_h5m1 (h5m1_singlebar5_break_volume),
+    KEY ix_hypothesis_v1_h5m2 (h5m2_singlebar5_break_rsi),
+    KEY ix_hypothesis_v1_h5m3 (h5m3_singlebar5_break_ma10),
+    KEY ix_hypothesis_v1_d1 (d1_prev5_up10_high_break_5m3),
+    KEY ix_hypothesis_v1_d2 (d2_prev10_high20_closeup_5d_highvol)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS hypothesis_validation_v1_summary (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    hypothesis_name VARCHAR(80) NOT NULL,
+    sample_count INT NOT NULL DEFAULT 0,
+    actual_top10_count INT NOT NULL DEFAULT 0,
+    hit_rate_to_actual_top10 DOUBLE NULL,
+    avg_actual_max_after_return_pct DOUBLE NULL,
+    avg_break_after_max_return_pct DOUBLE NULL,
+    avg_break_after_close_return_pct DOUBLE NULL,
+    avg_break_after_max_drawdown_pct DOUBLE NULL,
+    win_rate_after_3pct DOUBLE NULL,
+    win_rate_after_5pct DOUBLE NULL,
+    win_rate_after_10pct DOUBLE NULL,
+    win_rate_after_20pct DOUBLE NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_hypothesis_v1_summary (hypothesis_name),
+    KEY ix_hypothesis_v1_summary_sample (sample_count),
+    KEY ix_hypothesis_v1_summary_hit (actual_top10_count)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
