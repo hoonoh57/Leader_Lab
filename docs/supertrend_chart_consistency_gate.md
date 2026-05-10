@@ -5,6 +5,31 @@
 
 ---
 
+## 0. 작업 원칙: GitHub 수정 / 로컬 pull-test only
+
+이 프로젝트의 표준 작업 방식은 다음으로 고정한다.
+
+```text
+GitHub에서 직접 코드/문서 수정
+→ 로컬에서는 git pull
+→ 로컬에서는 테스트/실행만 수행
+→ 로컬 PowerShell로 파일 직접 패치 금지
+```
+
+PowerShell은 아래 용도로만 사용한다.
+
+```text
+git status
+git pull origin main
+빌드/생성 스크립트 실행
+리포트 열기
+테스트 로그 확인
+```
+
+로컬에서 `Set-Content`, `Add-Content`, 대량 replace, here-string 기반 파일 재작성 방식은 사용하지 않는다. 한글 인코딩, 따옴표, 줄바꿈, 경로 이스케이프 문제로 기존 로직을 훼손할 수 있기 때문이다.
+
+---
+
 ## 1. 목적
 
 `SuperTrend Regime Discovery`에서 생성된 DB 저장 ST 상승구간이 실제 차트의 SuperTrend 상승선과 정확히 일치하는지 검증한다.
@@ -254,6 +279,7 @@ reports/supertrend_regime_discovery_dashboard.html 열기
 손절/익절 조건 설계
 Good ST Segment Similarity 점수화
 Macro/news/sector/LLM overlay 결합
+로컬 PowerShell 파일 직접 수정
 ```
 
 아직 차트와 DB의 ST 구간이 같은지 검증되지 않았기 때문에 전략 설계는 보류한다.
