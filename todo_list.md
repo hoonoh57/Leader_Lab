@@ -33,9 +33,57 @@ Score Top10 안에 실제 대장주/대박주 7개 이상 포함
 
 ---
 
-## 1. 구현 원칙
+## 1. 현재 연구 스택 위치
 
-### 1.1 계획 기반 구현
+현재 연구 흐름은 아래 순서로 고정한다.
+
+```text
+Experiment Registry
+→ Winner Pattern Discovery
+→ Winner Feature Score v1
+→ Time-Aware Winner Feature Score v2
+→ SuperTrend Regime Discovery
+→ Chart Consistency Gate  ← 현재 최우선
+→ Good ST Segment Similarity
+→ Regime-aware entry/exit strategy
+→ Macro/news/sector/LLM overlay
+```
+
+현재는 `SuperTrend Regime Discovery` 결과가 생성된 상태이며, 다음 차례는 매수/매도 전략이 아니라 `Chart Consistency Gate`이다.
+
+절대 바로 진입/매도전략으로 넘어가지 않는다.
+
+먼저 아래 5가지를 확인한다.
+
+```text
+1. 차트가 09:00 이전 warmup 봉을 포함하는가
+2. 09:00 기준선이 보이는가
+3. ST Up / ST Down 선이 보이는가
+4. DB에 저장된 ST 상승구간 음영이 ST Up 선과 일치하는가
+5. 장초반 강한 상승구간이 warmup 부족 때문에 누락되지 않는가
+```
+
+관련 문서:
+
+```text
+docs/supertrend_chart_consistency_gate.md
+```
+
+최근 실행 기준:
+
+```text
+targets=2622
+params=(7,1.5), (7,2.0), (10,2.0), (14,2.0)
+warmup_bars=80
+segments=25070
+report=reports/supertrend_regime_discovery_dashboard.html
+```
+
+---
+
+## 2. 구현 원칙
+
+### 2.1 계획 기반 구현
 
 앞으로 구현은 이 `todo_list.md` 순서대로 진행한다.
 
@@ -45,9 +93,9 @@ Score Top10 안에 실제 대장주/대박주 7개 이상 포함
 이 기능이 Hit@10, Label10Rate, PF/MDD 개선에 직접 기여하는가?
 ```
 
-직접 기여하지 않으면 후순위로 둔다.
+단, 현재 `Chart Consistency Gate`는 모든 후속 전략 실험의 데이터/화면 신뢰성을 결정하는 선행 관문이므로 최우선 예외로 둔다.
 
-### 1.2 GitHub 작업 방식
+### 2.2 GitHub 작업 방식
 
 GitHub 툴 사용 권한 요청을 줄이기 위해 다음 방식으로 진행한다.
 
@@ -65,7 +113,7 @@ Phase 단위 구현
 = SQL + Python modules + scripts + tests + docs 업데이트를 한 번에 처리
 ```
 
-### 1.3 Core / Experiment 분리
+### 2.3 Core / Experiment 분리
 
 불변 Core:
 
@@ -77,6 +125,7 @@ Metric evaluator
 Report generator
 Experiment registry
 Agent contract
+Chart consistency validator
 ```
 
 가변 Experiment:
@@ -91,13 +140,14 @@ Entry policy
 Exit policy
 Model type
 Agent score usage
+ST parameter
 ```
 
 Core는 안정화하고, 실험은 설정/버전으로 바꾼다.
 
 ---
 
-## 2. 현재 완료/진행 상태
+## 3. 현재 완료/진행 상태
 
 ### 완료
 
@@ -120,15 +170,27 @@ Core는 안정화하고, 실험은 설정/버전으로 바꾼다.
   - `docs/custom_screener_architecture.md`
   - `docs/local_agent_score_supply_architecture.md`
   - `docs/server32_agent_operating_architecture.md`
+  - `docs/supertrend_chart_consistency_gate.md`
+- [x] SuperTrend Regime Discovery 결과 생성
+  - `segments=25070`
+  - `reports/supertrend_regime_discovery_dashboard.html`
 
-### 진행 중
+### 현재 최우선 진행 중
+
+- [ ] SuperTrend Regime Discovery Dashboard에 선택 ST 파라미터 기준 ST Up / ST Down line 표시
+- [ ] 09:00 기준선 표시
+- [ ] warmup 영역 또는 Warmup OK/FAIL badge 표시
+- [ ] DB segment shade와 ST Up line 정합성 검증
+- [ ] Chart Consistency PASS/FAIL 카드 표시
+
+### 기존 진행 중
 
 - [ ] 874개 성과검증 대상 종목의 5분봉 기간 캐시 구축
 - [ ] 5분봉 캐시 coverage 검증
 
 ---
 
-## 3. 전체 구현 플로우
+## 4. 전체 구현 플로우
 
 ```mermaid
 flowchart TD
@@ -170,6 +232,52 @@ flowchart TD
 
 ---
 
+# Phase ST-0. SuperTrend Chart Consistency Gate
+
+## 목적
+
+SuperTrend Regime Discovery에서 DB에 저장한 ST 상승구간이 실제 차트의 ST Up line과 일치하는지 검증한다.
+
+## 구현 묶음
+
+- [ ] `generate_supertrend_regime_discovery_dashboard.py` 또는 현재 대시보드 생성부 수정
+- [ ] chart candle JSON에 `st_up`, `st_down`, `st_value`, `st_dir`, `is_warmup`, `is_after_0900` 추가
+- [ ] ST Parameter 드롭다운과 차트 ST line 완전 연동
+- [ ] Plotly `stUpTrace`, `stDownTrace` 추가
+- [ ] `connectgaps: false` 적용
+- [ ] 09:00 vertical baseline 추가
+- [ ] warmup area 또는 Warmup OK/FAIL badge 추가
+- [ ] Chart Consistency PASS/FAIL 카드 추가
+- [ ] 필요 시 `src/research/verify_supertrend_chart_consistency.py` 추가
+- [ ] 필요 시 `reports/supertrend_chart_consistency.csv` 생성
+
+## 완료 기준
+
+- [ ] `reports/supertrend_regime_discovery_dashboard.html`에서 ST Parameter 선택 가능
+- [ ] 선택 파라미터 기준 ST Up / ST Down 선이 차트에 직접 표시됨
+- [ ] DB segment shade가 ST Up line과 일치하는지 눈으로 확인 가능
+- [ ] 09:00 기준선 표시
+- [ ] warmup 포함 여부 표시
+- [ ] 장초반 강한 상승구간 누락 위험 확인 가능
+- [ ] PASS/FAIL 카드 표시
+
+## 통과 후 다음 단계
+
+```text
+Good ST Segment Similarity
+```
+
+## 아직 하지 않을 것
+
+```text
+진입전략
+매도전략
+손절/익절
+Macro/news/sector/LLM overlay
+```
+
+---
+
 # Phase 0. Repo / Project Contract Stabilization
 
 ## 목적
@@ -180,8 +288,9 @@ flowchart TD
 
 한 번의 GitHub 작업에서 다음을 함께 처리한다.
 
-- [ ] `README.md` 최신 구조 반영
-- [ ] `todo_list.md` 최신화
+- [x] `README.md` 최신 구조 반영
+- [x] `todo_list.md` 최신화
+- [x] `docs/supertrend_chart_consistency_gate.md` 추가
 - [ ] `docs/` 인덱스 문서 추가
 - [ ] `configs/` 기본 설정 추가
 - [ ] `scripts/` 실행 순서 표준화
@@ -693,9 +802,23 @@ PF/MDD 실전 가능
 
 ---
 
-## 4. 권한 요청 최소화를 위한 작업 단위
+## 5. 권한 요청 최소화를 위한 작업 단위
 
 앞으로 GitHub 코드생성은 다음 단위로 묶는다.
+
+### Bundle ST. SuperTrend Chart Consistency Bundle
+
+포함:
+
+```text
+dashboard chartData ST line fields
+ST Up/Down Plotly traces
+09:00 baseline
+warmup badge/area
+segment shade vs ST Up consistency card
+optional consistency CSV
+README/todo/docs update
+```
 
 ### Bundle A. Data Foundation Bundle
 
@@ -800,37 +923,44 @@ Report Archive
 
 ---
 
-## 5. 다음 실행 순서
+## 6. 다음 실행 순서
 
-현재 5분봉 전체기간 캐시가 진행 중이므로, 완료 후 다음 순서로 진행한다.
-
-```text
-1. verify_minute5_cache 결과 확인
-2. Bundle A 또는 B 선택
-   - 데이터 부족이면 Bundle A
-   - 5분봉만으로 일단 평가 가능하면 Bundle B
-3. Baseline을 눈으로 확인
-4. Feature + Score v1 생성
-5. Walk-forward 검증
-6. 실패사례/성공사례 누적
-7. 필요 시 1분봉/Agent/전략다변화로 확장
-```
-
-실제 구현 우선 추천:
+현재 최우선 실행 순서는 다음이다.
 
 ```text
-현재 5분봉 캐시 완료
-→ Bundle B: WYSIWYG Evaluation Bundle
-→ Bundle C: Feature + Score v1 Bundle
-→ Bundle D: Walk-forward + Case Knowledge Bundle
-→ Bundle A: 1분봉 Data Foundation 확장
+1. git pull
+2. docs/supertrend_chart_consistency_gate.md 확인
+3. Bundle ST 구현 또는 패치 적용
+4. build_supertrend_regime_discovery.ps1 실행
+5. build_supertrend_regime_discovery_dashboard.ps1 실행
+6. reports/supertrend_regime_discovery_dashboard.html 열기
+7. ST Up/Down line, 09:00 baseline, warmup, DB shade 일치 확인
+8. Chart Consistency PASS 후 Good ST Segment Similarity로 이동
 ```
 
-단, 5분봉만으로 feature 한계가 바로 드러나면 `Bundle A`를 앞당긴다.
+로컬 실행:
+
+```powershell
+cd E:\2026\Leader_Lab
+git pull
+.\scripts\build_supertrend_regime_discovery.ps1
+.\scripts\build_supertrend_regime_discovery_dashboard.ps1
+start .\reports\supertrend_regime_discovery_dashboard.html
+```
+
+그 다음 순서:
+
+```text
+Chart Consistency PASS
+→ Good ST Segment Similarity
+→ Regime-aware entry/exit strategy
+```
+
+기존 5분봉 캐시 기반 WYSIWYG 평가 흐름은 Chart Consistency Gate 이후 또는 병렬 보조 작업으로 유지한다.
 
 ---
 
-## 6. 최종 원칙
+## 7. 최종 원칙
 
 ```text
 데이터는 누적된다.
