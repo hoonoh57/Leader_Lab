@@ -16,7 +16,7 @@ import math
 import os
 import statistics
 import sys
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -72,6 +72,45 @@ def ensure_schema(conn: Any, rebuild: bool) -> None:
             if sql:
                 cur.execute(sql)
     conn.commit()
+
+
+def normalize_time_value(value: Any) -> time:
+    """Normalize MySQL TIME values.
+
+    PyMySQL often returns MySQL TIME columns as datetime.timedelta, not datetime.time.
+    datetime.combine requires datetime.time, so every search_time must pass through this helper.
+    """
+    if isinstance(value, time):
+        return value
+    if isinstance(value, timedelta):
+        total_seconds = int(value.total_seconds())
+        if total_seconds < 0:
+            total_seconds = 0
+        total_seconds = total_seconds % (24 * 60 * 60)
+        hour = total_seconds // 3600
+        minute = (total_seconds % 3600) // 60
+        second = total_seconds % 60
+        return time(hour, minute, second)
+    if isinstance(value, str):
+        parts = value.strip().split(":")
+        if len(parts) >= 2:
+            hour = int(parts[0])
+            minute = int(parts[1])
+            second = int(parts[2]) if len(parts) >= 3 else 0
+            return time(hour, minute, second)
+    raise TypeError("Unsupported time value: " + repr(value))
+
+
+def combine_date_time(date_value: Any, time_value: Any) -> datetime:
+    if isinstance(date_value, datetime):
+        d = date_value.date()
+    elif isinstance(date_value, date):
+        d = date_value
+    elif isinstance(date_value, str):
+        d = datetime.fromisoformat(date_value).date()
+    else:
+        raise TypeError("Unsupported date value: " + repr(date_value))
+    return datetime.combine(d, normalize_time_value(time_value))
 
 
 def to_float(value: Any) -> Optional[float]:
@@ -205,7 +244,7 @@ def calculate_supertrend(rows: List[Dict[str, Any]], period: int, multiplier: fl
     final_upper: List[Optional[float]] = [None] * n
     final_lower: List[Optional[float]] = [None] * n
     st_line: List[Optional[float]] = [None] * n
-    direction: List[int] = [0] * n  # 1=up, -1=down, 0=unknown
+    direction: List[int] = [0] * n
 
     for i in range(n):
         high = to_float(rows[i].get("high_price"))
@@ -231,14 +270,8 @@ def calculate_supertrend(rows: List[Dict[str, Any]], period: int, multiplier: fl
             final_upper[i] = basic_upper
             final_lower[i] = basic_lower
         else:
-            if basic_upper < prev_upper or (prev_close is not None and prev_close > prev_upper):
-                final_upper[i] = basic_upper
-            else:
-                final_upper[i] = prev_upper
-            if basic_lower > prev_lower or (prev_close is not None and prev_close < prev_lower):
-                final_lower[i] = basic_lower
-            else:
-                final_lower[i] = prev_lower
+            final_upper[i] = basic_upper if basic_upper < prev_upper or (prev_close is not None and prev_close > prev_upper) else prev_upper
+            final_lower[i] = basic_lower if basic_lower > prev_lower or (prev_close is not None and prev_close < prev_lower) else prev_lower
 
         prev_dir = direction[i - 1]
         if prev_dir == 0:
@@ -321,8 +354,9 @@ def build_segment_features(rows: List[Dict[str, Any]], start_idx: int, end_idx: 
 def extract_segments(target: Dict[str, Any], rows: List[Dict[str, Any]], period: int, multiplier: float) -> List[Dict[str, Any]]:
     if len(rows) < period + 3:
         return []
-    st_line, direction = calculate_supertrend(rows, period, multiplier)
-    capture_dt = datetime.combine(target.get("search_date"), target.get("search_time"))
+    _st_line, direction = calculate_supertrend(rows, period, multiplier)
+    capture_dt = combine_date_time(target.get("search_date"), target.get("search_time"))
+    search_time_value = normalize_time_value(target.get("search_time"))
     segments: List[Dict[str, Any]] = []
     i = 0
     seg_no = 1
@@ -331,9 +365,6 @@ def extract_segments(target: Dict[str, Any], rows: List[Dict[str, Any]], period:
             i += 1
             continue
         start_idx = i
-        while start_idx > 0 and direction[start_idx - 1] == 1:
-            # avoid duplicating continuous up segment if loop enters mid-segment
-            break
         j = i
         while j + 1 < len(rows) and direction[j + 1] == 1:
             j += 1
@@ -344,7 +375,6 @@ def extract_segments(target: Dict[str, Any], rows: List[Dict[str, Any]], period:
         if start_time is None:
             i = end_idx + 1
             continue
-        # Keep segments that overlap or occur after condition capture.
         if end_time is not None and end_time < capture_dt:
             i = end_idx + 1
             continue
@@ -363,7 +393,7 @@ def extract_segments(target: Dict[str, Any], rows: List[Dict[str, Any]], period:
         segment_features = build_segment_features(rows, start_idx, end_idx)
         row: Dict[str, Any] = {
             "trade_date": target.get("search_date"),
-            "search_time": target.get("search_time"),
+            "search_time": search_time_value,
             "code": str(target.get("code")),
             "name": target.get("name"),
             "timeframe": "m5",
