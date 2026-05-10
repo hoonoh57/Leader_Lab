@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Build SuperTrend Regime Discovery.
+"""Build SuperTrend Regime Discovery with prior intraday warm-up candles.
 
-This script extracts SuperTrend uptrend segments from the current condition-search universe.
-It does not create a buy/sell strategy. It creates reusable regime labels:
-Good ST, Great ST, Bad ST, false/noisy ST.
+Purpose:
+    Extract SuperTrend uptrend regime segments from the condition-search universe.
+
+Important design:
+    ATR/SuperTrend must NOT be calculated from only the current day's 09:00 candles.
+    This script loads prior intraday candles as warm-up input, calculates indicators over
+    warm-up + current-day candles, and stores only current-day ST uptrend segments.
 
 Run:
     python -m src.analysis.build_supertrend_regime_discovery --env .env --rebuild
@@ -22,6 +26,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pymysql
+
+
+TIMEFRAME = "m5"
 
 
 def load_env(env_path: str) -> None:
@@ -75,29 +82,15 @@ def ensure_schema(conn: Any, rebuild: bool) -> None:
 
 
 def normalize_time_value(value: Any) -> time:
-    """Normalize MySQL TIME values.
-
-    PyMySQL often returns MySQL TIME columns as datetime.timedelta, not datetime.time.
-    datetime.combine requires datetime.time, so every search_time must pass through this helper.
-    """
     if isinstance(value, time):
         return value
     if isinstance(value, timedelta):
-        total_seconds = int(value.total_seconds())
-        if total_seconds < 0:
-            total_seconds = 0
-        total_seconds = total_seconds % (24 * 60 * 60)
-        hour = total_seconds // 3600
-        minute = (total_seconds % 3600) // 60
-        second = total_seconds % 60
-        return time(hour, minute, second)
+        seconds = int(value.total_seconds()) % (24 * 60 * 60)
+        return time(seconds // 3600, (seconds % 3600) // 60, seconds % 60)
     if isinstance(value, str):
         parts = value.strip().split(":")
         if len(parts) >= 2:
-            hour = int(parts[0])
-            minute = int(parts[1])
-            second = int(parts[2]) if len(parts) >= 3 else 0
-            return time(hour, minute, second)
+            return time(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) >= 3 else 0)
     raise TypeError("Unsupported time value: " + repr(value))
 
 
@@ -146,16 +139,12 @@ def pct(new_value: Optional[float], base_value: Optional[float]) -> Optional[flo
 
 def avg(values: List[Optional[float]]) -> Optional[float]:
     items = [v for v in values if v is not None]
-    if not items:
-        return None
-    return sum(items) / float(len(items))
+    return None if not items else sum(items) / float(len(items))
 
 
 def median(values: List[Optional[float]]) -> Optional[float]:
     items = [v for v in values if v is not None]
-    if not items:
-        return None
-    return float(statistics.median(items))
+    return None if not items else float(statistics.median(items))
 
 
 def rate_int(values: List[int], target: int = 1) -> Optional[float]:
@@ -188,10 +177,25 @@ def load_targets(conn: Any) -> List[Dict[str, Any]]:
         return list(cur.fetchall())
 
 
-def load_day_candles(conn: Any, trade_date: Any, code: str) -> List[Dict[str, Any]]:
-    start_dt = datetime.combine(trade_date, time(9, 0, 0))
-    end_dt = datetime.combine(trade_date, time(15, 30, 0))
+def load_warmup_day_candles(conn: Any, trade_date: Any, code: str, warmup_bars: int) -> Tuple[List[Dict[str, Any]], int]:
+    current_start = datetime.combine(trade_date, time(9, 0, 0))
+    current_end = datetime.combine(trade_date, time(15, 30, 0))
     with conn.cursor() as cur:
+        cur.execute("""
+            SELECT candle_time AS candle_time,
+                   open AS open_price,
+                   high AS high_price,
+                   low AS low_price,
+                   close AS close_price,
+                   volume AS volume
+            FROM minute5_candles
+            WHERE code = %s
+              AND candle_time < %s
+            ORDER BY candle_time DESC
+            LIMIT %s
+        """, (code, current_start, warmup_bars))
+        prev_rows = list(cur.fetchall())
+        prev_rows.reverse()
         cur.execute("""
             SELECT candle_time AS candle_time,
                    open AS open_price,
@@ -204,8 +208,9 @@ def load_day_candles(conn: Any, trade_date: Any, code: str) -> List[Dict[str, An
               AND candle_time >= %s
               AND candle_time <= %s
             ORDER BY candle_time
-        """, (code, start_dt, end_dt))
-        return list(cur.fetchall())
+        """, (code, current_start, current_end))
+        day_rows = list(cur.fetchall())
+    return prev_rows + day_rows, len(prev_rows)
 
 
 def true_range(row: Dict[str, Any], prev_close: Optional[float]) -> Optional[float]:
@@ -245,7 +250,6 @@ def calculate_supertrend(rows: List[Dict[str, Any]], period: int, multiplier: fl
     final_lower: List[Optional[float]] = [None] * n
     st_line: List[Optional[float]] = [None] * n
     direction: List[int] = [0] * n
-
     for i in range(n):
         high = to_float(rows[i].get("high_price"))
         low = to_float(rows[i].get("low_price"))
@@ -255,24 +259,17 @@ def calculate_supertrend(rows: List[Dict[str, Any]], period: int, multiplier: fl
         hl2 = (high + low) / 2.0
         basic_upper = hl2 + multiplier * atr[i]
         basic_lower = hl2 - multiplier * atr[i]
-
         if i == 0 or final_upper[i - 1] is None or final_lower[i - 1] is None:
             final_upper[i] = basic_upper
             final_lower[i] = basic_lower
             direction[i] = 1
             st_line[i] = final_lower[i]
             continue
-
         prev_close = to_float(rows[i - 1].get("close_price"))
         prev_upper = final_upper[i - 1]
         prev_lower = final_lower[i - 1]
-        if prev_upper is None or prev_lower is None:
-            final_upper[i] = basic_upper
-            final_lower[i] = basic_lower
-        else:
-            final_upper[i] = basic_upper if basic_upper < prev_upper or (prev_close is not None and prev_close > prev_upper) else prev_upper
-            final_lower[i] = basic_lower if basic_lower > prev_lower or (prev_close is not None and prev_close < prev_lower) else prev_lower
-
+        final_upper[i] = basic_upper if basic_upper < prev_upper or (prev_close is not None and prev_close > prev_upper) else prev_upper
+        final_lower[i] = basic_lower if basic_lower > prev_lower or (prev_close is not None and prev_close < prev_lower) else prev_lower
         prev_dir = direction[i - 1]
         if prev_dir == 0:
             prev_dir = 1
@@ -286,19 +283,18 @@ def calculate_supertrend(rows: List[Dict[str, Any]], period: int, multiplier: fl
     return st_line, direction
 
 
-def build_start_features(rows: List[Dict[str, Any]], start_idx: int) -> Dict[str, Any]:
-    day_open = to_float(rows[0].get("open_price")) if rows else None
-    before = rows[0:start_idx + 1]
-    lows = [to_float(r.get("low_price")) for r in before]
-    highs = [to_float(r.get("high_price")) for r in before]
+def build_start_features(rows: List[Dict[str, Any]], current_start_idx: int, start_idx: int) -> Dict[str, Any]:
+    day_rows_until_start = rows[current_start_idx:start_idx + 1]
+    day_open = to_float(rows[current_start_idx].get("open_price")) if current_start_idx < len(rows) else None
+    lows = [to_float(r.get("low_price")) for r in day_rows_until_start]
+    highs = [to_float(r.get("high_price")) for r in day_rows_until_start]
     day_low_so_far = min([v for v in lows if v is not None]) if any(v is not None for v in lows) else None
     high_so_far = max([v for v in highs if v is not None]) if any(v is not None for v in highs) else None
     start_price = to_float(rows[start_idx].get("close_price"))
-
     cum_amount = 0.0
     cum_volume = 0
     max_singlebar: Optional[float] = None
-    for row in before:
+    for row in day_rows_until_start:
         amount = amount_from_row(row)
         if amount is not None:
             cum_amount += amount
@@ -351,35 +347,39 @@ def build_segment_features(rows: List[Dict[str, Any]], start_idx: int, end_idx: 
     }
 
 
-def extract_segments(target: Dict[str, Any], rows: List[Dict[str, Any]], period: int, multiplier: float) -> List[Dict[str, Any]]:
-    if len(rows) < period + 3:
+def extract_segments(target: Dict[str, Any], rows: List[Dict[str, Any]], current_start_idx: int, period: int, multiplier: float) -> List[Dict[str, Any]]:
+    if len(rows) < period + 3 or current_start_idx >= len(rows):
         return []
     _st_line, direction = calculate_supertrend(rows, period, multiplier)
     capture_dt = combine_date_time(target.get("search_date"), target.get("search_time"))
     search_time_value = normalize_time_value(target.get("search_time"))
+    current_start_time = rows[current_start_idx].get("candle_time")
     segments: List[Dict[str, Any]] = []
-    i = 0
+    i = current_start_idx
     seg_no = 1
     while i < len(rows):
         if direction[i] != 1:
             i += 1
             continue
         start_idx = i
+        # If current day starts inside an already-running uptrend, move start to current_start_idx.
+        if i == current_start_idx and current_start_idx > 0 and direction[current_start_idx - 1] == 1:
+            start_idx = current_start_idx
         j = i
         while j + 1 < len(rows) and direction[j + 1] == 1:
             j += 1
         end_idx = j
-
         start_time = rows[start_idx].get("candle_time")
         end_time = rows[end_idx].get("candle_time")
-        if start_time is None:
+        if start_time is None or end_time is None:
             i = end_idx + 1
             continue
-        if end_time is not None and end_time < capture_dt:
+        if end_time < capture_dt:
             i = end_idx + 1
             continue
-
-        already_up_at_capture = 1 if start_time <= capture_dt <= (end_time or start_time) else 0
+        if start_time < current_start_time:
+            start_time = current_start_time
+        already_up_at_capture = 1 if start_time <= capture_dt <= end_time else 0
         start_price = to_float(rows[start_idx].get("close_price"))
         end_price = to_float(rows[end_idx].get("close_price"))
         highs = [to_float(r.get("high_price")) for r in rows[start_idx:end_idx + 1]]
@@ -389,14 +389,12 @@ def extract_segments(target: Dict[str, Any], rows: List[Dict[str, Any]], period:
         max_ret = pct(max_price, start_price)
         end_ret = pct(end_price, start_price)
         drawdown = pct(min_price, start_price)
-        start_features = build_start_features(rows, start_idx)
-        segment_features = build_segment_features(rows, start_idx, end_idx)
         row: Dict[str, Any] = {
             "trade_date": target.get("search_date"),
             "search_time": search_time_value,
             "code": str(target.get("code")),
             "name": target.get("name"),
-            "timeframe": "m5",
+            "timeframe": TIMEFRAME,
             "st_period": period,
             "st_multiplier": multiplier,
             "segment_no": seg_no,
@@ -412,8 +410,8 @@ def extract_segments(target: Dict[str, Any], rows: List[Dict[str, Any]], period:
             "st_up_max_return_pct": max_ret,
             "st_up_end_return_pct": end_ret,
             "st_up_max_drawdown_pct": drawdown,
-            **start_features,
-            **segment_features,
+            **build_start_features(rows, current_start_idx, start_idx),
+            **build_segment_features(rows, start_idx, end_idx),
             "label_st_gain_3pct": 1 if max_ret is not None and max_ret >= 3.0 else 0,
             "label_st_gain_5pct": 1 if max_ret is not None and max_ret >= 5.0 else 0,
             "label_st_gain_10pct": 1 if max_ret is not None and max_ret >= 10.0 else 0,
@@ -457,9 +455,8 @@ def refresh_summary(conn: Any) -> None:
             groups.append("BAD_FAIL_OR_NEG")
         if to_int(row.get("already_up_at_capture")) == 1:
             groups.append("ALREADY_UP_AT_CAPTURE")
-        for g in groups:
-            grouped.setdefault((to_int(row.get("st_period")), float(row.get("st_multiplier")), g), []).append(row)
-
+        for group_name in groups:
+            grouped.setdefault((to_int(row.get("st_period")), float(row.get("st_multiplier")), group_name), []).append(row)
     sql_summary = """
         INSERT INTO supertrend_regime_summary (
             st_period, st_multiplier, segment_group, segment_count, active_days, avg_segments_per_day,
@@ -479,7 +476,7 @@ def refresh_summary(conn: Any) -> None:
     """
     with conn.cursor() as cur:
         for key, vals in grouped.items():
-            row = {
+            summary_row = {
                 "st_period": key[0],
                 "st_multiplier": key[1],
                 "segment_group": key[2],
@@ -503,8 +500,11 @@ def refresh_summary(conn: Any) -> None:
                 "avg_segment_amount": avg([to_float(v.get("segment_amount")) for v in vals]),
                 "avg_segment_max_singlebar_return_pct": avg([to_float(v.get("segment_max_singlebar_return_pct")) for v in vals]),
             }
-            cur.execute(sql_summary, row)
+            cur.execute(sql_summary, summary_row)
+    refresh_feature_summary(conn, rows)
 
+
+def refresh_feature_summary(conn: Any, rows: List[Dict[str, Any]]) -> None:
     feature_names = [
         "start_from_day_open_pct", "start_from_day_low_pct", "start_cum_amount",
         "start_range_so_far_pct", "start_high_so_far_from_open_pct",
@@ -576,10 +576,9 @@ def parse_params(text: str) -> List[Tuple[int, float]]:
     result: List[Tuple[int, float]] = []
     for item in text.split(","):
         t = item.strip()
-        if not t:
-            continue
-        p, m = t.split(":")
-        result.append((int(p), float(m)))
+        if t:
+            p, m = t.split(":")
+            result.append((int(p), float(m)))
     return result
 
 
@@ -588,9 +587,9 @@ def main() -> int:
     parser.add_argument("--env", default=".env")
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--params", default="7:1.5,7:2.0,10:2.0,14:2.0")
+    parser.add_argument("--warmup-bars", type=int, default=80)
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
-
     load_env(args.env)
     conn = open_conn()
     try:
@@ -602,17 +601,18 @@ def main() -> int:
         print("=== build_supertrend_regime_discovery ===")
         print("targets=" + str(len(targets)))
         print("params=" + str(params))
+        print("warmup_bars=" + str(args.warmup_bars))
         total = 0
-        candle_cache: Dict[Tuple[Any, str], List[Dict[str, Any]]] = {}
+        candle_cache: Dict[Tuple[Any, str], Tuple[List[Dict[str, Any]], int]] = {}
         for target in targets:
             key = (target.get("search_date"), str(target.get("code")))
             if key not in candle_cache:
-                candle_cache[key] = load_day_candles(conn, target.get("search_date"), str(target.get("code")))
-            rows = candle_cache[key]
+                candle_cache[key] = load_warmup_day_candles(conn, target.get("search_date"), str(target.get("code")), args.warmup_bars)
+            rows, current_start_idx = candle_cache[key]
             if not rows:
                 continue
             for period, multiplier in params:
-                segments = extract_segments(target, rows, period, multiplier)
+                segments = extract_segments(target, rows, current_start_idx, period, multiplier)
                 for seg in segments:
                     upsert_segment(conn, seg)
                     total += 1
