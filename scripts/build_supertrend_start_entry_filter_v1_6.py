@@ -4,10 +4,13 @@
 Leader_Lab v1.6
 SuperTrend START Entry Filter Builder
 
-- MySQL 전용
-- SQLite / --db-path 사용 금지
-- v1.5 ST_START vs EARLY3 Failure Diagnostics 산출물을 읽어 ST_START 진입 후보를 등급화
-- 로컬에서는 git pull 후 ps1 실행만 수행
+MySQL 전용. v1.5 ST_START vs EARLY3 Failure Diagnostics 산출물을 읽어
+ST_START 진입 후보를 A/B/C/D/E로 등급화한다.
+
+핵심 수정:
+- ST_START_WINS_EARLY3_FAILS 는 post_early3_extension_pct가 낮은 것이 실패가 아니라
+  EARLY3 대기 시 이미 수익구간을 놓쳤다는 증거다.
+- 따라서 D(약한 지속 실패)보다 A(FAST_LEADER) 판정을 먼저 수행한다.
 
 입력 기본 테이블:
 - supertrend_start_vs_early3_failure_diag_v1_5
@@ -46,12 +49,23 @@ REQUIRED_COLS = [
     "start_cum_amount", "live_risk_score_v1_2", "live_filter_label_v1_2", "post_diagnostic_label_v1_2"
 ]
 
+DETAIL_COLS = [
+    "source_table", "trade_date", "code", "name", "st_period", "st_multiplier", "segment_no", "st_up_start_time",
+    "score_total", "st_up_max_return_pct", "st_start_estimated_return_pct", "early3_estimated_return_pct",
+    "early3_high_return_pct", "post_early3_extension_pct", "early3_lost_move_pct",
+    "start_from_day_open_pct", "start_from_day_low_pct", "start_cum_amount", "live_risk_score_v1_2",
+    "failure_reason_v1_5", "action_hint_v1_5", "live_filter_label_v1_2", "post_diagnostic_label_v1_2",
+    "filter_label_v1_6", "filter_grade_v1_6", "filter_score_v1_6", "entry_decision_v1_6", "filter_reason_v1_6",
+    "need_tick_hoga_confirm", "auto_entry_candidate", "skip_candidate"
+]
+
 
 def parse_conn_string(conn_str: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     if not conn_str:
         return result
-    for part in [p.strip() for p in conn_str.split(";") if p.strip()]:
+    parts = [p.strip() for p in conn_str.split(";") if p.strip()]
+    for part in parts:
         if "=" not in part:
             continue
         k, v = part.split("=", 1)
@@ -73,13 +87,7 @@ def parse_conn_string(conn_str: str) -> Dict[str, Any]:
 
 
 def build_mysql_config(args: argparse.Namespace) -> Dict[str, Any]:
-    conn_env = (
-        args.mysql_conn
-        or os.environ.get("MYSQL_CONN")
-        or os.environ.get("DB_CONN")
-        or os.environ.get("MYSQL_CONNECTION_STRING")
-        or ""
-    )
+    conn_env = args.mysql_conn or os.environ.get("MYSQL_CONN") or os.environ.get("DB_CONN") or os.environ.get("MYSQL_CONNECTION_STRING") or ""
     cfg = parse_conn_string(conn_env)
     database = args.database or cfg.get("database") or os.environ.get("DB_NAME") or os.environ.get("MYSQL_DATABASE")
     if not database:
@@ -139,7 +147,12 @@ def table_exists(conn: Any, table_name: str) -> bool:
 
 def get_columns(conn: Any, table_name: str) -> List[str]:
     rows = fetch_all(conn, "SELECT column_name AS column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = %s ORDER BY ordinal_position", [table_name])
-    return [str(r.get("column_name")) for r in rows if r.get("column_name") is not None]
+    cols: List[str] = []
+    for r in rows:
+        v = r.get("column_name")
+        if v is not None:
+            cols.append(str(v))
+    return cols
 
 
 def assert_source_table(conn: Any, table_name: str) -> None:
@@ -227,7 +240,6 @@ CREATE TABLE {qident(SUMMARY_TABLE)} (
     KEY ix_v16_sum_score (avg_filter_score_v1_6)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 """)
-
     execute(conn, f"CREATE TABLE {qident(EXAMPLE_TABLE)} LIKE {qident(DETAIL_TABLE)}")
 
 
@@ -244,9 +256,12 @@ def label_row(row: Dict[str, Any], args: argparse.Namespace) -> Tuple[str, str, 
     live_label = str(row.get("live_filter_label_v1_2") or "")
     post_label = str(row.get("post_diagnostic_label_v1_2") or "")
 
+    st_wins_early3_fails = "ST_START_WINS_EARLY3_FAILS" in fail_reason
+    both_weak = "BOTH_WEAK" in fail_reason
     open_overheated = ("OPEN_OVERHEATED" in live_label) or open_pct >= args.open_overheat_pct
     low_overextended = ("LOW_OVEREXTENDED" in live_label) or low_pct >= args.low_overextend_pct
-    peak_exhausted = ("PEAK_EXHAUSTED" in post_label) or ("EARLY3_ALREADY_EXHAUSTED" in fail_reason) or post_ext <= args.weak_return_pct
+    live_exclude = "LIVE_EXCLUDE" in live_label
+    peak_exhausted = ("PEAK_EXHAUSTED" in post_label) or ("EARLY3_ALREADY_EXHAUSTED" in fail_reason)
     big_start_edge = st_ret >= args.success_return_pct and e_ret <= args.weak_return_pct
     strong_post = post_ext >= args.post_extension_good_pct
     amount_ok = amount >= args.min_start_amount
@@ -260,24 +275,30 @@ def label_row(row: Dict[str, Any], args: argparse.Namespace) -> Tuple[str, str, 
     base_score += min(15.0, max(0.0, score_total - 70.0) * 0.5)
     base_score += 10.0 if amount_ok else 0.0
     base_score += 8.0 if big_start_edge else 0.0
-    base_score += 7.0 if "ST_START_WINS_EARLY3_FAILS" in fail_reason else 0.0
+    base_score += 7.0 if st_wins_early3_fails else 0.0
     base_score -= 18.0 if open_overheated else 0.0
     base_score -= 18.0 if low_overextended else 0.0
     base_score -= min(20.0, max(0.0, risk) * 0.25)
     base_score = max(0.0, min(100.0, base_score))
 
-    if (open_overheated and low_overextended) or "LIVE_EXCLUDE" in live_label or risk_high:
+    # 1) 명백한 실시간 위험은 우선 제외한다.
+    if (open_overheated and low_overextended) or live_exclude or risk_high:
         return ("ST_START_C_OVEREXTENDED_SKIP", "C", base_score, "진입 제외", "시초/저점대비 과확장 또는 실시간 위험점수 과다", 0, 0, 1)
 
-    if st_ret < args.success_return_pct or post_ext < args.weak_return_pct or "BOTH_WEAK" in fail_reason:
-        return ("ST_START_D_WEAK_CONTINUATION_SKIP", "D", base_score, "진입 제외", "ST_START 이후 기대수익 또는 후속 확장 부족", 0, 0, 1)
+    # 2) v1.5 핵심 발견: ST_START가 이기고 EARLY3가 실패한 케이스는 D가 아니라 A 후보다.
+    #    post_early3_extension_pct가 낮은 것은 '기다리면 늦는다'는 증거이므로 D 조건보다 먼저 판정한다.
+    if st_wins_early3_fails and big_start_edge and score_ok and amount_ok and risk_low and not open_overheated and not low_overextended:
+        return ("ST_START_A_FAST_LEADER", "A", max(base_score, 88.0), "ST_START 즉시 진입 후보", "EARLY3 대기 시 수익구간 소실 가능성이 큰 장초반 선도형", 0, 1, 0)
 
-    if big_start_edge and score_ok and amount_ok and risk_low and not open_overheated and not low_overextended and not peak_exhausted:
-        return ("ST_START_A_FAST_LEADER", "A", max(base_score, 85.0), "ST_START 즉시 진입 후보", "EARLY3 대기 시 수익구간 소실 가능성이 큰 장초반 선도형", 0, 1, 0)
+    # 3) START 자체가 약한 경우만 D로 제외한다. post_ext 약함만으로 D 처리하지 않는다.
+    if st_ret < args.success_return_pct or both_weak:
+        return ("ST_START_D_WEAK_CONTINUATION_SKIP", "D", base_score, "진입 제외", "ST_START 자체 기대수익 부족 또는 START/EARLY3 동반 약세", 0, 0, 1)
 
+    # 4) START는 유효하지만 이미 단기 과열/소진이면 즉시추격이 아니라 눌림/재돌파 대기다.
     if st_ret >= args.success_return_pct and (open_overheated or low_overextended or peak_exhausted):
         return ("ST_START_B_VALID_BUT_WAIT_PULLBACK", "B", base_score, "즉시 추격 금지, 눌림/재돌파 확인", "ST_START 자체는 유효하나 단기 과열 또는 피크소진 리스크 존재", 0, 0, 0)
 
+    # 5) START와 EARLY3가 둘 다 좋은 일반 강세형은 실시간 틱강도/호가흡수로 최종 확인한다.
     if st_ret >= args.success_return_pct and (strong_post or score_ok) and risk <= args.mid_risk_score:
         return ("ST_START_E_NEEDS_TICK_HOGA_CONFIRM", "E", base_score, "틱강도/호가흡수 확인 후 진입", "가격조건은 통과하나 실시간 수급 확인 필요", 1, 0, 0)
 
@@ -301,25 +322,9 @@ ORDER BY trade_date, code, st_period, st_multiplier, segment_no
 
 
 def insert_details(conn: Any, source_table: str, rows: List[Dict[str, Any]], args: argparse.Namespace) -> int:
-    sql = f"""
-INSERT INTO {qident(DETAIL_TABLE)} (
-    source_table, trade_date, code, name, st_period, st_multiplier, segment_no, st_up_start_time,
-    score_total, st_up_max_return_pct, st_start_estimated_return_pct, early3_estimated_return_pct,
-    early3_high_return_pct, post_early3_extension_pct, early3_lost_move_pct,
-    start_from_day_open_pct, start_from_day_low_pct, start_cum_amount, live_risk_score_v1_2,
-    failure_reason_v1_5, action_hint_v1_5, live_filter_label_v1_2, post_diagnostic_label_v1_2,
-    filter_label_v1_6, filter_grade_v1_6, filter_score_v1_6, entry_decision_v1_6, filter_reason_v1_6,
-    need_tick_hoga_confirm, auto_entry_candidate, skip_candidate
-) VALUES (
-    %s,%s,%s,%s,%s,%s,%s,%s,
-    %s,%s,%s,%s,
-    %s,%s,%s,
-    %s,%s,%s,%s,
-    %s,%s,%s,%s,
-    %s,%s,%s,%s,%s,
-    %s,%s,%s
-)
-"""
+    col_csv = ", ".join(qident(c) for c in DETAIL_COLS)
+    placeholders = ",".join(["%s"] * len(DETAIL_COLS))
+    sql = f"INSERT INTO {qident(DETAIL_TABLE)} ({col_csv}) VALUES ({placeholders})"
     vals: List[Tuple[Any, ...]] = []
     for r in rows:
         label, grade, fscore, decision, reason, need_tick, auto_entry, skip = label_row(r, args)
@@ -365,7 +370,6 @@ def build_examples(conn: Any, top_n: int) -> None:
     if not cols:
         raise RuntimeError("detail table columns not found")
     col_csv = ", ".join(qident(c) for c in cols)
-    # SELECT d.*, ROW_NUMBER() creates an extra rn column, so INSERT/SELECT must use explicit detail columns only.
     execute(conn, f"""
 INSERT INTO {qident(EXAMPLE_TABLE)} ({col_csv})
 SELECT {col_csv} FROM (
