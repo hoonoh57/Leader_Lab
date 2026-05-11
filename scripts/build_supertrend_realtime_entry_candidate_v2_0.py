@@ -6,15 +6,6 @@ SuperTrend Realtime Entry Candidate Builder
 
 MySQL 전용.
 
-목표:
-- v1.9 실행정책 테이블을 실시간 매매 후보 테이블로 압축한다.
-- 차트/백테스트 연구용 라벨을 실전 액션 4개로 고정한다.
-    1) AUTO_BUY_NEXT_BAR
-    2) WAIT_PULLBACK
-    3) REQUIRE_HOGA_TICK_CONFIRM
-    4) SKIP
-- WYSIWYT 원칙에 맞게 사용자가 화면에서 보는 후보가 그대로 매매 후보가 되도록 한다.
-
 입력:
 - supertrend_entry_execution_policy_detail_v1_9
 
@@ -22,6 +13,10 @@ MySQL 전용.
 - supertrend_realtime_entry_candidate_v2_0
 - supertrend_realtime_entry_candidate_summary_v2_0
 - supertrend_realtime_entry_candidate_examples_v2_0
+
+수정 메모:
+- MySQL INSERT INTO ... SELECT ... ORDER BY에서 집계 별칭을 명시하지 않으면
+  1054 Unknown column 오류가 발생할 수 있으므로 모든 AVG 집계에 alias를 부여한다.
 """
 
 from __future__ import annotations
@@ -289,7 +284,6 @@ def calc_entry_score(row: Dict[str, Any]) -> float:
     amount = to_float(row.get("start_cum_amount"), 0.0)
     open_pct = to_float(row.get("start_from_day_open_pct"), 0.0)
     low_pct = to_float(row.get("start_from_day_low_pct"), 0.0)
-
     ret_score = max(0.0, min(100.0, selected_return * 7.0))
     total = 0.0
     total += execution_score * 0.42
@@ -326,14 +320,12 @@ def decide_action(row: Dict[str, Any], args: argparse.Namespace) -> Tuple[str, s
         open_pct <= args.auto_max_open_pct and
         low_pct <= args.auto_max_low_pct
     )
-
     wait_ok = (
         policy == "WAIT_FIRST_PULLBACK" and
         selected_return >= args.wait_min_return_pct and
         selected_mae >= args.wait_min_mae_pct and
         entry_score >= args.wait_min_entry_score
     )
-
     confirm_ok = (
         policy == "HOGA_TICK_CONFIRM_REQUIRED" or
         label == "EXECUTION_CONFIRM_REQUIRED" or
@@ -378,7 +370,6 @@ def decide_action(row: Dict[str, Any], args: argparse.Namespace) -> Tuple[str, s
         reasons.append("시작 누적거래대금 부족")
     if selected_mae < args.auto_min_mae_pct:
         reasons.append("진입 후 MAE 리스크 큼")
-
     return grade, action, risk, qty, "; ".join(reasons)
 
 
@@ -448,11 +439,22 @@ INSERT INTO {qident(SUMMARY_TABLE)} (
     avg_start_from_day_open_pct, avg_start_from_day_low_pct, avg_start_cum_amount
 )
 SELECT
-    st_period, st_multiplier, final_entry_grade_v2_0, entry_action_v2_0,
+    st_period,
+    st_multiplier,
+    final_entry_grade_v2_0,
+    entry_action_v2_0,
     COUNT(*) AS row_count,
-    AVG(entry_score_v2_0), AVG(execution_score_v1_9), AVG(selected_estimated_return_pct), AVG(selected_max_adverse_excursion_pct),
-    AVG(next_bar_return_pct), AVG(next_bar_mae_pct), AVG(pullback_return_pct), AVG(pullback_mae_pct),
-    AVG(start_from_day_open_pct), AVG(start_from_day_low_pct), AVG(start_cum_amount)
+    AVG(entry_score_v2_0) AS avg_entry_score_v2_0,
+    AVG(execution_score_v1_9) AS avg_execution_score_v1_9,
+    AVG(selected_estimated_return_pct) AS avg_selected_return_pct,
+    AVG(selected_max_adverse_excursion_pct) AS avg_selected_mae_pct,
+    AVG(next_bar_return_pct) AS avg_next_bar_return_pct,
+    AVG(next_bar_mae_pct) AS avg_next_bar_mae_pct,
+    AVG(pullback_return_pct) AS avg_pullback_return_pct,
+    AVG(pullback_mae_pct) AS avg_pullback_mae_pct,
+    AVG(start_from_day_open_pct) AS avg_start_from_day_open_pct,
+    AVG(start_from_day_low_pct) AS avg_start_from_day_low_pct,
+    AVG(start_cum_amount) AS avg_start_cum_amount
 FROM {qident(CANDIDATE_TABLE)}
 GROUP BY st_period, st_multiplier, final_entry_grade_v2_0, entry_action_v2_0
 ORDER BY avg_entry_score_v2_0 DESC, avg_selected_return_pct DESC
