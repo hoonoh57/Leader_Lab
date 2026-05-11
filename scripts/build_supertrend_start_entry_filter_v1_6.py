@@ -4,7 +4,6 @@
 Leader_Lab v1.6
 SuperTrend START Entry Filter Builder
 
-원칙:
 - MySQL 전용
 - SQLite / --db-path 사용 금지
 - v1.5 ST_START vs EARLY3 Failure Diagnostics 산출물을 읽어 ST_START 진입 후보를 등급화
@@ -140,7 +139,7 @@ def table_exists(conn: Any, table_name: str) -> bool:
 
 def get_columns(conn: Any, table_name: str) -> List[str]:
     rows = fetch_all(conn, "SELECT column_name AS column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = %s ORDER BY ordinal_position", [table_name])
-    return [str(r.get("column_name")) for r in rows]
+    return [str(r.get("column_name")) for r in rows if r.get("column_name") is not None]
 
 
 def assert_source_table(conn: Any, table_name: str) -> None:
@@ -229,16 +228,13 @@ CREATE TABLE {qident(SUMMARY_TABLE)} (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 """)
 
-    execute(conn, f"""
-CREATE TABLE {qident(EXAMPLE_TABLE)} LIKE {qident(DETAIL_TABLE)}
-""")
+    execute(conn, f"CREATE TABLE {qident(EXAMPLE_TABLE)} LIKE {qident(DETAIL_TABLE)}")
 
 
 def label_row(row: Dict[str, Any], args: argparse.Namespace) -> Tuple[str, str, float, str, str, int, int, int]:
     score_total = to_float(row.get("score_total"))
     st_ret = to_float(row.get("st_start_estimated_return_pct"))
     e_ret = to_float(row.get("early3_estimated_return_pct"))
-    early3_high = to_float(row.get("early3_high_return_pct"))
     post_ext = to_float(row.get("post_early3_extension_pct"))
     open_pct = to_float(row.get("start_from_day_open_pct"))
     low_pct = to_float(row.get("start_from_day_low_pct"))
@@ -271,39 +267,21 @@ def label_row(row: Dict[str, Any], args: argparse.Namespace) -> Tuple[str, str, 
     base_score = max(0.0, min(100.0, base_score))
 
     if (open_overheated and low_overextended) or "LIVE_EXCLUDE" in live_label or risk_high:
-        return (
-            "ST_START_C_OVEREXTENDED_SKIP", "C", base_score,
-            "진입 제외", "시초/저점대비 과확장 또는 실시간 위험점수 과다", 0, 0, 1
-        )
+        return ("ST_START_C_OVEREXTENDED_SKIP", "C", base_score, "진입 제외", "시초/저점대비 과확장 또는 실시간 위험점수 과다", 0, 0, 1)
 
     if st_ret < args.success_return_pct or post_ext < args.weak_return_pct or "BOTH_WEAK" in fail_reason:
-        return (
-            "ST_START_D_WEAK_CONTINUATION_SKIP", "D", base_score,
-            "진입 제외", "ST_START 이후 기대수익 또는 후속 확장 부족", 0, 0, 1
-        )
+        return ("ST_START_D_WEAK_CONTINUATION_SKIP", "D", base_score, "진입 제외", "ST_START 이후 기대수익 또는 후속 확장 부족", 0, 0, 1)
 
     if big_start_edge and score_ok and amount_ok and risk_low and not open_overheated and not low_overextended and not peak_exhausted:
-        return (
-            "ST_START_A_FAST_LEADER", "A", max(base_score, 85.0),
-            "ST_START 즉시 진입 후보", "EARLY3 대기 시 수익구간 소실 가능성이 큰 장초반 선도형", 0, 1, 0
-        )
+        return ("ST_START_A_FAST_LEADER", "A", max(base_score, 85.0), "ST_START 즉시 진입 후보", "EARLY3 대기 시 수익구간 소실 가능성이 큰 장초반 선도형", 0, 1, 0)
 
     if st_ret >= args.success_return_pct and (open_overheated or low_overextended or peak_exhausted):
-        return (
-            "ST_START_B_VALID_BUT_WAIT_PULLBACK", "B", base_score,
-            "즉시 추격 금지, 눌림/재돌파 확인", "ST_START 자체는 유효하나 단기 과열 또는 피크소진 리스크 존재", 0, 0, 0
-        )
+        return ("ST_START_B_VALID_BUT_WAIT_PULLBACK", "B", base_score, "즉시 추격 금지, 눌림/재돌파 확인", "ST_START 자체는 유효하나 단기 과열 또는 피크소진 리스크 존재", 0, 0, 0)
 
     if st_ret >= args.success_return_pct and (strong_post or score_ok) and risk <= args.mid_risk_score:
-        return (
-            "ST_START_E_NEEDS_TICK_HOGA_CONFIRM", "E", base_score,
-            "틱강도/호가흡수 확인 후 진입", "가격조건은 통과하나 실시간 수급 확인 필요", 1, 0, 0
-        )
+        return ("ST_START_E_NEEDS_TICK_HOGA_CONFIRM", "E", base_score, "틱강도/호가흡수 확인 후 진입", "가격조건은 통과하나 실시간 수급 확인 필요", 1, 0, 0)
 
-    return (
-        "ST_START_E_NEEDS_TICK_HOGA_CONFIRM", "E", base_score,
-        "틱강도/호가흡수 확인 후 진입", "단독 가격특성만으로는 A/C/D 확정 불가", 1, 0, 0
-    )
+    return ("ST_START_E_NEEDS_TICK_HOGA_CONFIRM", "E", base_score, "틱강도/호가흡수 확인 후 진입", "단독 가격특성만으로는 A/C/D 확정 불가", 1, 0, 0)
 
 
 def load_source_rows(conn: Any, source_table: str, limit: int) -> List[Dict[str, Any]]:
@@ -347,12 +325,10 @@ INSERT INTO {qident(DETAIL_TABLE)} (
         label, grade, fscore, decision, reason, need_tick, auto_entry, skip = label_row(r, args)
         vals.append((
             source_table, r.get("trade_date"), r.get("code"), r.get("name"), to_int(r.get("st_period")), to_float(r.get("st_multiplier")),
-            to_int(r.get("segment_no")), r.get("st_up_start_time"),
-            to_float(r.get("score_total")), to_float(r.get("st_up_max_return_pct")), to_float(r.get("st_start_estimated_return_pct")),
-            to_float(r.get("early3_estimated_return_pct")), to_float(r.get("early3_high_return_pct")),
-            to_float(r.get("post_early3_extension_pct")), to_float(r.get("early3_lost_move_pct")),
-            to_float(r.get("start_from_day_open_pct")), to_float(r.get("start_from_day_low_pct")),
-            to_float(r.get("start_cum_amount")), to_float(r.get("live_risk_score_v1_2")),
+            to_int(r.get("segment_no")), r.get("st_up_start_time"), to_float(r.get("score_total")), to_float(r.get("st_up_max_return_pct")),
+            to_float(r.get("st_start_estimated_return_pct")), to_float(r.get("early3_estimated_return_pct")), to_float(r.get("early3_high_return_pct")),
+            to_float(r.get("post_early3_extension_pct")), to_float(r.get("early3_lost_move_pct")), to_float(r.get("start_from_day_open_pct")),
+            to_float(r.get("start_from_day_low_pct")), to_float(r.get("start_cum_amount")), to_float(r.get("live_risk_score_v1_2")),
             r.get("failure_reason_v1_5"), r.get("action_hint_v1_5"), r.get("live_filter_label_v1_2"), r.get("post_diagnostic_label_v1_2"),
             label, grade, fscore, decision, reason, need_tick, auto_entry, skip
         ))
@@ -385,10 +361,14 @@ GROUP BY st_period, st_multiplier, filter_label_v1_6, filter_grade_v1_6
 
 def build_examples(conn: Any, top_n: int) -> None:
     execute(conn, f"TRUNCATE TABLE {qident(EXAMPLE_TABLE)}")
-    # MySQL 8 window function: label별 대표 사례를 균형 있게 저장
+    cols = get_columns(conn, DETAIL_TABLE)
+    if not cols:
+        raise RuntimeError("detail table columns not found")
+    col_csv = ", ".join(qident(c) for c in cols)
+    # SELECT d.*, ROW_NUMBER() creates an extra rn column, so INSERT/SELECT must use explicit detail columns only.
     execute(conn, f"""
-INSERT INTO {qident(EXAMPLE_TABLE)}
-SELECT * FROM (
+INSERT INTO {qident(EXAMPLE_TABLE)} ({col_csv})
+SELECT {col_csv} FROM (
     SELECT d.*, ROW_NUMBER() OVER (
         PARTITION BY d.filter_label_v1_6
         ORDER BY d.auto_entry_candidate DESC, d.skip_candidate ASC, d.filter_score_v1_6 DESC,
