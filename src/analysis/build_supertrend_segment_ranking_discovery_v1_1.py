@@ -3,10 +3,12 @@
 
 v1.1 fixes the semantic problem found in v1:
     - v1 WEAK_FOLLOW_THROUGH_ST was actually a strong early expansion state.
-    - v1.1 separates EARLY_EXPANSION_ST from FAILED_EARLY_EXPANSION_ST.
+    - v1.1 separates EARLY_EXPANSION_ST from FAILED_EARLY_EXPANSION_ST when retention columns exist.
     - v1.1 compares score-rank-1 GOOD/GREAT vs BAD false positives.
 
-This is still diagnostic analysis, not live trading validation.
+This version is schema-tolerant. Some local DBs do not have early2_return_pct /
+early3_return_pct in great_st_early_score_v1. In that case those derived fields
+are stored as NULL and the classifier falls back to early high/amount/breakout.
 """
 
 from __future__ import annotations
@@ -125,12 +127,26 @@ def amount_uk(value: Any) -> float:
 
 
 def minutes_from_open(dt_value: Any) -> Optional[int]:
-    if dt_value is None:
-        return None
-    if not isinstance(dt_value, datetime):
+    if dt_value is None or not isinstance(dt_value, datetime):
         return None
     open_dt = datetime.combine(dt_value.date(), time(9, 0, 0))
     return int((dt_value - open_dt).total_seconds() // 60)
+
+
+def table_has_column(conn: Any, table_name: str, column_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND column_name = %s
+            """,
+            (table_name, column_name),
+        )
+        row = cur.fetchone()
+    return to_int(row.get("cnt") if row else 0) > 0
 
 
 def classify_state_v1_1(row: Dict[str, Any]) -> str:
@@ -145,42 +161,50 @@ def classify_state_v1_1(row: Dict[str, Any]) -> str:
     retention = safe_div(early3_ret, early3_high) if early3_ret is not None else None
     start_minutes = minutes_from_open(row.get("st_up_start_time"))
 
-    is_exhausted = False
-    if start_amt_uk >= 300.0:
-        is_exhausted = True
-    if start_open >= 12.0:
-        is_exhausted = True
-    if start_low >= 18.0:
-        is_exhausted = True
+    if start_amt_uk >= 300.0 or start_open >= 12.0 or start_low >= 18.0:
+        return "EXHAUSTED_ST"
     if start_minutes is not None and start_minutes >= 240 and start_open >= 5.0:
-        is_exhausted = True
-
-    if is_exhausted:
         return "EXHAUSTED_ST"
 
     if early3_high >= 4.0 and break3 == 1:
-        if early3_ret is not None and early3_ret > 0.0 and retention is not None and retention >= 0.20:
+        if early3_ret is None:
+            if score >= 60.0 or early3_amt_uk >= 50.0:
+                return "EARLY_EXPANSION_ST"
+            return "FAILED_EARLY_EXPANSION_ST"
+        if early3_ret > 0.0 and retention is not None and retention >= 0.20:
             if score >= 60.0 or early3_amt_uk >= 50.0:
                 return "EARLY_EXPANSION_ST"
         return "FAILED_EARLY_EXPANSION_ST"
 
     if early3_amt_uk < 30.0 and score < 40.0:
         return "LOW_POWER_ST"
-
     return "NEUTRAL_ST"
 
 
 def load_joined_rows(conn: Any) -> List[Dict[str, Any]]:
+    has_early2_ret = table_has_column(conn, "great_st_early_score_v1", "early2_return_pct")
+    has_early3_ret = table_has_column(conn, "great_st_early_score_v1", "early3_return_pct")
+
+    select_cols = ["r.*"]
+    join_sql = ""
+    if has_early2_ret or has_early3_ret:
+        join_sql = " LEFT JOIN great_st_early_score_v1 s ON s.id = r.score_id "
+        if has_early2_ret:
+            select_cols.append("s.early2_return_pct AS early2_return_pct")
+        else:
+            select_cols.append("CAST(NULL AS DOUBLE) AS early2_return_pct")
+        if has_early3_ret:
+            select_cols.append("s.early3_return_pct AS early3_return_pct")
+        else:
+            select_cols.append("CAST(NULL AS DOUBLE) AS early3_return_pct")
+    else:
+        select_cols.append("CAST(NULL AS DOUBLE) AS early2_return_pct")
+        select_cols.append("CAST(NULL AS DOUBLE) AS early3_return_pct")
+
+    sql = "SELECT " + ", ".join(select_cols) + " FROM st_segment_ranking_v1 r " + join_sql + " ORDER BY r.trade_date, r.code, r.st_period, r.st_multiplier, r.st_up_start_time"
+    print("early_return_columns_found=" + str(has_early2_ret or has_early3_ret))
     with conn.cursor() as cur:
-        cur.execute("""
-            SELECT
-                r.*,
-                s.early2_return_pct,
-                s.early3_return_pct
-            FROM st_segment_ranking_v1 r
-            LEFT JOIN great_st_early_score_v1 s ON s.id = r.score_id
-            ORDER BY r.trade_date, r.code, r.st_period, r.st_multiplier, r.st_up_start_time
-        """)
+        cur.execute(sql)
         return list(cur.fetchall())
 
 
@@ -193,7 +217,6 @@ def build_rows(base_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         early3_amt = to_float(r.get("early3_cum_amount"))
         retention = safe_div(early3_ret, early3_high)
         amount_growth = safe_div(early3_amt, early2_amt)
-        state_v11 = classify_state_v1_1(r)
         is_rank1 = 1 if to_int(r.get("is_score_rank1")) == 1 else 0
         label_good = to_int(r.get("label_good_or_great"))
         label_bad = to_int(r.get("label_bad"))
@@ -247,7 +270,7 @@ def build_rows(base_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "early2_max_singlebar_return_pct": r.get("early2_max_singlebar_return_pct"),
             "early3_max_singlebar_return_pct": r.get("early3_max_singlebar_return_pct"),
             "old_segment_state_label": r.get("segment_state_label"),
-            "segment_state_label_v1_1": state_v11,
+            "segment_state_label_v1_1": classify_state_v1_1(r),
             "false_positive_flag": false_positive,
             "positive_rank1_flag": positive_rank1,
         })
