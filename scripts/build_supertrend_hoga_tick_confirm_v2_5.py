@@ -41,37 +41,16 @@ SUMMARY_TABLE = "supertrend_hoga_tick_confirm_summary_v2_5"
 EXAMPLE_TABLE = "supertrend_hoga_tick_confirm_examples_v2_5"
 
 REQUIRED_SOURCE_COLUMNS = [
-    "display_scope",
-    "board_row_no",
-    "ui_section",
-    "trade_decision",
-    "entry_action",
-    "display_grade",
-    "display_score",
-    "trade_date",
-    "code",
-    "name",
-    "ticker_label",
-    "entry_time",
-    "entry_time_text",
-    "entry_price",
-    "expected_return_pct",
-    "mae_risk_pct",
-    "start_cum_amount",
-    "start_cum_amount_eok",
-    "start_from_day_open_pct",
-    "start_from_day_low_pct",
-    "quantity_scale",
-    "short_reason",
+    "display_scope", "board_row_no", "ui_section", "trade_decision", "entry_action",
+    "display_grade", "display_score", "trade_date", "code", "name", "ticker_label",
+    "entry_time", "entry_time_text", "entry_price", "expected_return_pct", "mae_risk_pct",
+    "start_cum_amount", "start_cum_amount_eok", "start_from_day_open_pct",
+    "start_from_day_low_pct", "quantity_scale", "short_reason",
 ]
 
 REAL_TICK_COLUMNS = [
-    "tick_intensity",
-    "buy_tick_ratio",
-    "large_trade_amount",
-    "hoga_bid_pressure",
-    "hoga_ask_absorption",
-    "spread_risk",
+    "tick_intensity", "buy_tick_ratio", "large_trade_amount",
+    "hoga_bid_pressure", "hoga_ask_absorption", "spread_risk",
 ]
 
 
@@ -175,36 +154,15 @@ def expr_or_proxy(cols: set[str], real_col: str, proxy_sql: str) -> str:
 def build_view(conn, source_table: str, cols: set[str]) -> None:
     execute(conn, "DROP TABLE IF EXISTS " + qident(VIEW_TABLE))
 
-    tick_intensity_expr = expr_or_proxy(
-        cols,
-        "tick_intensity",
-        "LEAST(100.0, GREATEST(0.0, IFNULL(b.display_score,0) * 0.35 + IFNULL(b.expected_return_pct,0) * 2.20 + LEAST(IFNULL(b.start_cum_amount_eok,0), 150) * 0.12 + GREATEST(IFNULL(b.mae_risk_pct,0), -8) * 1.50))",
-    )
-    buy_tick_ratio_expr = expr_or_proxy(
-        cols,
-        "buy_tick_ratio",
-        "LEAST(100.0, GREATEST(0.0, 48.0 + IFNULL(b.expected_return_pct,0) * 1.35 + IFNULL(b.start_from_day_low_pct,0) * 0.90 + GREATEST(IFNULL(b.mae_risk_pct,0), -10) * 1.80))",
-    )
-    large_trade_amount_expr = expr_or_proxy(
-        cols,
-        "large_trade_amount",
-        "IFNULL(b.start_cum_amount,0) * 0.18",
-    )
-    hoga_bid_pressure_expr = expr_or_proxy(
-        cols,
-        "hoga_bid_pressure",
-        "LEAST(100.0, GREATEST(0.0, 45.0 + IFNULL(b.start_from_day_low_pct,0) * 2.00 + IFNULL(b.expected_return_pct,0) * 0.75 - ABS(IFNULL(b.mae_risk_pct,0)) * 1.20))",
-    )
-    hoga_ask_absorption_expr = expr_or_proxy(
-        cols,
-        "hoga_ask_absorption",
-        "LEAST(100.0, GREATEST(0.0, 42.0 + LEAST(IFNULL(b.start_cum_amount_eok,0), 180) * 0.18 + IFNULL(b.expected_return_pct,0) * 0.85 - ABS(IFNULL(b.mae_risk_pct,0)) * 1.10))",
-    )
-    spread_risk_expr = expr_or_proxy(
-        cols,
-        "spread_risk",
-        "LEAST(100.0, GREATEST(0.0, ABS(IFNULL(b.mae_risk_pct,0)) * 8.0 + GREATEST(IFNULL(b.start_from_day_open_pct,0) - 8.0, 0) * 3.0))",
-    )
+    real_cols = [c for c in REAL_TICK_COLUMNS if c in cols]
+    tick_data_mode_sql = "'REAL_OR_PARTIAL'" if real_cols else "'PROXY_FROM_V2_4'"
+
+    tick_intensity_expr = expr_or_proxy(cols, "tick_intensity", "LEAST(100.0, GREATEST(0.0, IFNULL(b.display_score,0) * 0.35 + IFNULL(b.expected_return_pct,0) * 2.20 + LEAST(IFNULL(b.start_cum_amount_eok,0), 150) * 0.12 + GREATEST(IFNULL(b.mae_risk_pct,0), -8) * 1.50))")
+    buy_tick_ratio_expr = expr_or_proxy(cols, "buy_tick_ratio", "LEAST(100.0, GREATEST(0.0, 48.0 + IFNULL(b.expected_return_pct,0) * 1.35 + IFNULL(b.start_from_day_low_pct,0) * 0.90 + GREATEST(IFNULL(b.mae_risk_pct,0), -10) * 1.80))")
+    large_trade_amount_expr = expr_or_proxy(cols, "large_trade_amount", "IFNULL(b.start_cum_amount,0) * 0.18")
+    hoga_bid_pressure_expr = expr_or_proxy(cols, "hoga_bid_pressure", "LEAST(100.0, GREATEST(0.0, 45.0 + IFNULL(b.start_from_day_low_pct,0) * 2.00 + IFNULL(b.expected_return_pct,0) * 0.75 - ABS(IFNULL(b.mae_risk_pct,0)) * 1.20))")
+    hoga_ask_absorption_expr = expr_or_proxy(cols, "hoga_ask_absorption", "LEAST(100.0, GREATEST(0.0, 42.0 + LEAST(IFNULL(b.start_cum_amount_eok,0), 180) * 0.18 + IFNULL(b.expected_return_pct,0) * 0.85 - ABS(IFNULL(b.mae_risk_pct,0)) * 1.10))")
+    spread_risk_expr = expr_or_proxy(cols, "spread_risk", "LEAST(100.0, GREATEST(0.0, ABS(IFNULL(b.mae_risk_pct,0)) * 8.0 + GREATEST(IFNULL(b.start_from_day_open_pct,0) - 8.0, 0) * 3.0))")
 
     execute(conn, f"""
 CREATE TABLE {qident(VIEW_TABLE)} AS
@@ -238,10 +196,7 @@ WITH base AS (
         {hoga_bid_pressure_expr} AS hoga_bid_pressure,
         {hoga_ask_absorption_expr} AS hoga_ask_absorption,
         {spread_risk_expr} AS spread_risk,
-        CASE
-            WHEN {" + ", ".join([("'" + c + "' IN ('" + "','".join(sorted(cols)) + "')") for c in REAL_TICK_COLUMNS]) + "} THEN 'REAL_OR_PARTIAL'
-            ELSE 'PROXY_FROM_V2_4'
-        END AS tick_data_mode
+        {tick_data_mode_sql} AS tick_data_mode
     FROM {qident(source_table)} b
     WHERE b.display_scope = 'TEST_WITH_HOGA_TICK_ALL'
       AND b.trade_decision = 'WATCH_HOGA_TICK'
@@ -422,27 +377,19 @@ def main() -> None:
         print("column_count=", to_int(column_rows[0].get("cnt"), 0) if column_rows else 0)
         print("real_tick_columns_found=", ",".join(real_cols) if real_cols else "NONE_PROXY_FROM_V2_4")
 
-        print_rows(
-            "v2.5 Hoga/Tick Confirm Summary",
-            fetch_all(conn, f"""
+        print_rows("v2.5 Hoga/Tick Confirm Summary", fetch_all(conn, f"""
 SELECT *
 FROM {qident(SUMMARY_TABLE)}
 ORDER BY first_confirm_rank_no ASC, avg_tick_confirm_score DESC
 LIMIT 80
-"""),
-        )
-        print_rows(
-            "v2.5 Hoga/Tick Confirm Column Spec",
-            fetch_all(conn, f"""
+"""))
+        print_rows("v2.5 Hoga/Tick Confirm Column Spec", fetch_all(conn, f"""
 SELECT column_order, column_key, source_column, header_text_ko, width_px,
        visible_compact, visible_test, pinned_left, format_key, color_rule_key
 FROM {qident(COLUMN_TABLE)}
 ORDER BY column_order ASC
-"""),
-        )
-        print_rows(
-            "v2.5 Hoga/Tick Confirm Preview",
-            fetch_all(conn, f"""
+"""))
+        print_rows("v2.5 Hoga/Tick Confirm Preview", fetch_all(conn, f"""
 SELECT confirm_rank_no, ticker_label, tick_confirm_label, next_action,
        tick_confirm_score, tick_intensity, buy_tick_ratio, large_trade_amount_eok,
        hoga_bid_pressure, hoga_ask_absorption, spread_risk,
@@ -450,8 +397,7 @@ SELECT confirm_rank_no, ticker_label, tick_confirm_label, next_action,
 FROM {qident(VIEW_TABLE)}
 ORDER BY confirm_rank_no ASC
 LIMIT {int(args.preview_limit)}
-"""),
-        )
+"""))
     except Exception:
         conn.rollback()
         raise
