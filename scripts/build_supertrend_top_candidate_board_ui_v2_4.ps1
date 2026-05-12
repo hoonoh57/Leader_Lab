@@ -11,8 +11,31 @@ if (-not (Test-Path $PyFile)) {
     exit 1
 }
 
+$Env:PYTHONPATH = $ScriptDir + ";" + $Env:PYTHONPATH
+
+$PyCode = @'
+import sys
+import build_supertrend_top_candidate_board_ui_v2_4 as m
+
+_original_execute = m.execute
+
+def _safe_execute(conn, sql, params=None):
+    fixed_sql = sql.replace(
+        "DATE_FORMAT(b.entry_time, '%H:%i') AS entry_time_text",
+        "SUBSTRING(CAST(b.entry_time AS CHAR), 12, 5) AS entry_time_text"
+    )
+    if params:
+        return _original_execute(conn, fixed_sql, params)
+    with conn.cursor() as cur:
+        cur.execute(fixed_sql)
+        return cur
+
+m.execute = _safe_execute
+m.main()
+'@
+
 $ArgsList = @(
-    $PyFile,
+    "-c", $PyCode,
     "--source-table", "supertrend_realtime_trade_board_screen_v2_3",
     "--preview-limit", "40"
 )
