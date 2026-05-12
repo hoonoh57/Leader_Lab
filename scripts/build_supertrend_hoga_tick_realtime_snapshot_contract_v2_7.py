@@ -119,17 +119,19 @@ def assert_source_view(conn, source_view: str) -> None:
 
 def ensure_realtime_table(conn, table_name: str) -> None:
     if not table_exists(conn, table_name):
-        column_sql = []
+        column_sql: list[str] = []
         for name, ddl in REALTIME_COLUMN_DEFINITIONS:
             column_sql.append("    " + qident(name) + " " + ddl)
-        execute(conn, f"""
+        create_columns_sql = ",\n".join(column_sql)
+        create_sql = f"""
 CREATE TABLE {qident(table_name)} (
-{',\n'.join(column_sql)},
+{create_columns_sql},
     KEY ix_v27_realtime_code_time (code, snapshot_time),
     KEY ix_v27_realtime_trade_date_code (trade_date, code),
     KEY ix_v27_realtime_source_tag (source_tag, snapshot_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-""")
+"""
+        execute(conn, create_sql)
         return
 
     existing_cols = get_columns(conn, table_name)
