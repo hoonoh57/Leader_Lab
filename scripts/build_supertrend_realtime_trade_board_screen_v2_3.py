@@ -252,7 +252,7 @@ def build_examples(conn, compact_top_n: int, test_hoga_top_n: int) -> None:
     execute(conn, f"""
 CREATE TABLE {qident(EXAMPLE_TABLE)} AS
 SELECT
-    'COMPACT_SCREEN' AS example_scope,
+    CAST('COMPACT_SCREEN' AS CHAR(64)) AS example_scope,
     b.*
 FROM {qident(SCREEN_TABLE)} b
 WHERE b.compact_visible = 1
@@ -263,6 +263,7 @@ ORDER BY b.ui_sort_bucket ASC,
          b.start_cum_amount DESC
 LIMIT {int(compact_top_n)}
 """)
+    execute(conn, f"ALTER TABLE {qident(EXAMPLE_TABLE)} MODIFY COLUMN example_scope VARCHAR(64) NOT NULL")
 
     execute(conn, f"""
 INSERT INTO {qident(EXAMPLE_TABLE)}
