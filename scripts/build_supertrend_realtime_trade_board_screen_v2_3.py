@@ -37,13 +37,71 @@ from build_supertrend_realtime_entry_candidate_v2_0 import (
     execute,
     qident,
     to_int,
-    assert_source_table,
 )
 
 SOURCE_TABLE_DEFAULT = "supertrend_realtime_trade_board_v2_2"
 SCREEN_TABLE = "supertrend_realtime_trade_board_screen_v2_3"
 SUMMARY_TABLE = "supertrend_realtime_trade_board_screen_summary_v2_3"
 EXAMPLE_TABLE = "supertrend_realtime_trade_board_screen_examples_v2_3"
+
+REQUIRED_V22_COLUMNS = [
+    "trade_date",
+    "code",
+    "name",
+    "entry_action",
+    "display_grade",
+    "display_score",
+    "expected_return_pct",
+    "mae_risk_pct",
+    "start_cum_amount",
+    "start_from_day_open_pct",
+    "start_from_day_low_pct",
+    "quantity_scale",
+    "trade_decision",
+    "chart_open_priority",
+    "entry_score_v2_0",
+    "execution_score_v1_9",
+    "next_bar_return_pct",
+    "next_bar_mae_pct",
+    "pullback_return_pct",
+    "pullback_mae_pct",
+]
+
+
+def source_table_exists(conn, table_name: str) -> bool:
+    rows = fetch_all(conn, """
+SELECT COUNT(*) AS cnt
+FROM information_schema.tables
+WHERE table_schema = DATABASE()
+  AND table_name = %s
+""", (table_name,))
+    return bool(rows and to_int(rows[0].get("cnt"), 0) > 0)
+
+
+def get_table_columns(conn, table_name: str) -> set[str]:
+    rows = fetch_all(conn, """
+SELECT column_name AS column_name
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND table_name = %s
+ORDER BY ordinal_position
+""", (table_name,))
+    cols: set[str] = set()
+    for r in rows:
+        cols.add(str(r.get("column_name")))
+    return cols
+
+
+def assert_v22_source_table(conn, table_name: str) -> None:
+    if not source_table_exists(conn, table_name):
+        raise RuntimeError("source table not found: " + table_name)
+    cols = get_table_columns(conn, table_name)
+    missing = []
+    for c in REQUIRED_V22_COLUMNS:
+        if c not in cols:
+            missing.append(c)
+    if missing:
+        raise RuntimeError("v2.2 trade board source required columns missing: " + ", ".join(missing))
 
 
 def build_screen_board(conn, args: argparse.Namespace) -> dict:
@@ -254,7 +312,7 @@ def main() -> None:
     cfg = build_mysql_config(args)
     conn = pymysql.connect(**cfg)
     try:
-        assert_source_table(conn, args.source_table)
+        assert_v22_source_table(conn, args.source_table)
         source_rows = fetch_all(conn, f"SELECT COUNT(*) AS cnt FROM {qident(args.source_table)}")
         source_count = to_int(source_rows[0].get("cnt"), 0) if source_rows else 0
         counts = build_screen_board(conn, args)
