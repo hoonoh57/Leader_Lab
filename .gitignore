@@ -23,6 +23,14 @@ logs/
 *.log
 reports/
 
+# build outputs
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+vbnet/**/bin/
+vbnet/**/obj/
+
 # python
 __pycache__/
 *.py[cod]
