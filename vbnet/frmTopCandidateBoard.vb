@@ -289,9 +289,9 @@ Public Class frmTopCandidateBoard
         Dim i As Integer
         For i = 0 To table.Rows.Count - 1
             Dim row As DataRow = table.Rows(i)
-            If table.Columns.Contains("dedup_rank") AndAlso Not IsDBNull(row("dedup_rank")) Then
+            If table.Columns.Contains("dedup_rank") AndAlso Not Convert.IsDBNull(row("dedup_rank")) Then
                 row("ui_rank") = Convert.ToInt32(row("dedup_rank"))
-            ElseIf table.Columns.Contains("raw_rank") AndAlso Not IsDBNull(row("raw_rank")) Then
+            ElseIf table.Columns.Contains("raw_rank") AndAlso Not Convert.IsDBNull(row("raw_rank")) Then
                 row("ui_rank") = Convert.ToInt32(row("raw_rank"))
             Else
                 row("ui_rank") = i + 1
