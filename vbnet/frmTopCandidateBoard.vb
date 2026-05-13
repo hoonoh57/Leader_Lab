@@ -32,11 +32,11 @@ Public Class frmTopCandidateBoard
             _connectionString = connectionString.Trim()
         End If
 
-        Me.Text = "Top Candidate Board v3.1"
+        Me.Text = "Top Candidate Board v3.4"
         Me.StartPosition = FormStartPosition.CenterScreen
-        Me.Width = 1500
+        Me.Width = 1550
         Me.Height = 850
-        Me.MinimumSize = New Size(1100, 650)
+        Me.MinimumSize = New Size(1150, 650)
 
         cboMode = New ComboBox()
         btnRefresh = New Button()
@@ -62,8 +62,9 @@ Public Class frmTopCandidateBoard
         lblMode.Dock = DockStyle.Left
 
         cboMode.DropDownStyle = ComboBoxStyle.DropDownList
-        cboMode.Width = 180
+        cboMode.Width = 240
         cboMode.Dock = DockStyle.Left
+        AddHandler cboMode.SelectedIndexChanged, AddressOf OnModeChanged
 
         btnRefresh.Text = "Refresh"
         btnRefresh.Width = 90
@@ -105,8 +106,8 @@ Public Class frmTopCandidateBoard
         dgvBoard.RowTemplate.Height = 24
 
         AddTextColumn("colRank", "순위", "ui_rank", 55, DataGridViewContentAlignment.MiddleRight)
-        AddTextColumn("colActionKr", "한글액션", "board_action_kr_v2_8", 105, DataGridViewContentAlignment.MiddleCenter)
-        AddTextColumn("colAction", "액션", "board_action_v2_8", 135, DataGridViewContentAlignment.MiddleCenter)
+        AddTextColumn("colActionKr", "한글액션", "board_action_kr_display", 110, DataGridViewContentAlignment.MiddleCenter)
+        AddTextColumn("colAction", "액션", "board_action_display", 165, DataGridViewContentAlignment.MiddleCenter)
         AddTextColumn("colCode", "종목코드", "code", 80, DataGridViewContentAlignment.MiddleCenter)
         AddTextColumn("colName", "종목명", "name", 120, DataGridViewContentAlignment.MiddleLeft)
         AddTextColumn("colTickerLabel", "라벨", "ticker_label", 150, DataGridViewContentAlignment.MiddleLeft)
@@ -123,7 +124,8 @@ Public Class frmTopCandidateBoard
         AddTextColumn("colAskAbsorb", "매도흡수", "hoga_ask_absorption_v2_6", 80, DataGridViewContentAlignment.MiddleRight, "N1")
         AddTextColumn("colSpread", "스프레드", "spread_risk_v2_6", 80, DataGridViewContentAlignment.MiddleRight, "N2")
         AddTextColumn("colNext", "다음행동", "final_next_action_v2_8", 130, DataGridViewContentAlignment.MiddleLeft)
-        AddTextColumn("colReason", "사유", "board_reason_v2_8", 360, DataGridViewContentAlignment.MiddleLeft)
+        AddTextColumn("colPromotion", "승격", "promotion_flag_display", 60, DataGridViewContentAlignment.MiddleCenter)
+        AddTextColumn("colReason", "사유", "board_reason_display", 420, DataGridViewContentAlignment.MiddleLeft)
         AddTextColumn("colSnapshot", "스냅샷", "realtime_snapshot_time", 150, DataGridViewContentAlignment.MiddleCenter)
         AddTextColumn("colSource", "소스", "realtime_source_tag", 110, DataGridViewContentAlignment.MiddleLeft)
 
@@ -135,11 +137,15 @@ Public Class frmTopCandidateBoard
     Private Sub InitializeModes()
         cboMode.Items.Clear()
         cboMode.Items.Add("LIVE_COMPACT")
+        cboMode.Items.Add("LIVE_COMPACT_V3_4")
         cboMode.Items.Add("TEST_ALL")
+        cboMode.Items.Add("TEST_ALL_V3_4")
         cboMode.Items.Add("AUTO_BUY_ONLY")
         cboMode.Items.Add("WATCH_ONLY")
+        cboMode.Items.Add("PROMOTED_WATCH_ONLY")
         cboMode.Items.Add("REJECT_ONLY")
-        cboMode.SelectedIndex = 0
+        cboMode.Items.Add("REJECT_ONLY_V3_4")
+        cboMode.SelectedIndex = 1
     End Sub
 
     Private Sub AddTextColumn(ByVal columnName As String,
@@ -158,6 +164,10 @@ Public Class frmTopCandidateBoard
             col.DefaultCellStyle.Format = formatText
         End If
         dgvBoard.Columns.Add(col)
+    End Sub
+
+    Private Sub OnModeChanged(ByVal sender As Object, ByVal e As EventArgs)
+        lblStatus.Text = "Mode changed: " & GetSelectedMode()
     End Sub
 
     Private Sub OnRefreshClick(ByVal sender As Object, ByVal e As EventArgs)
@@ -185,7 +195,7 @@ Public Class frmTopCandidateBoard
                 End Using
             End Using
 
-            EnsureUiRankColumn(table, mode)
+            EnsureUiRankColumn(table)
             dgvBoard.DataSource = table
             lblStatus.Text = mode & " / rows=" & table.Rows.Count.ToString("N0") & " / " & DateTime.Now.ToString("HH:mm:ss")
         Catch ex As Exception
@@ -195,78 +205,94 @@ Public Class frmTopCandidateBoard
 
     Private Function GetSelectedMode() As String
         If cboMode.SelectedItem Is Nothing Then
-            Return "LIVE_COMPACT"
+            Return "LIVE_COMPACT_V3_4"
         End If
         Dim selected As String = Convert.ToString(cboMode.SelectedItem)
         If String.IsNullOrWhiteSpace(selected) Then
-            Return "LIVE_COMPACT"
+            Return "LIVE_COMPACT_V3_4"
         End If
         Return selected.Trim()
     End Function
 
     Private Function BuildTopCandidateBoardSql(ByVal mode As String) As String
-        Dim selectColumns As String = BuildSelectColumnSql()
-
         Select Case mode
             Case "LIVE_COMPACT"
-                Return selectColumns & " FROM supertrend_top_candidate_board_dedup_view_v2_9 WHERE ui_live_compact_flag_v2_9 = 1 ORDER BY dedup_final_rank_no_v2_9 ASC"
+                Return BuildSelectColumnSqlV29(True) & " FROM supertrend_top_candidate_board_dedup_view_v2_9 WHERE ui_live_compact_flag_v2_9 = 1 ORDER BY dedup_final_rank_no_v2_9 ASC"
             Case "TEST_ALL"
-                Return selectColumns & " FROM supertrend_top_candidate_board_raw_view_v2_9 WHERE ui_test_all_flag_v2_9 = 1 ORDER BY final_rank_no_v2_8 ASC"
+                Return BuildSelectColumnSqlV29(False) & " FROM supertrend_top_candidate_board_raw_view_v2_9 WHERE ui_test_all_flag_v2_9 = 1 ORDER BY final_rank_no_v2_8 ASC"
             Case "AUTO_BUY_ONLY"
-                Return selectColumns & " FROM supertrend_top_candidate_board_dedup_view_v2_9 WHERE ui_auto_buy_only_flag_v2_9 = 1 ORDER BY dedup_final_rank_no_v2_9 ASC"
+                Return BuildSelectColumnSqlV29(True) & " FROM supertrend_top_candidate_board_dedup_view_v2_9 WHERE ui_auto_buy_only_flag_v2_9 = 1 ORDER BY dedup_final_rank_no_v2_9 ASC"
             Case "WATCH_ONLY"
-                Return selectColumns & " FROM supertrend_top_candidate_board_dedup_view_v2_9 WHERE ui_watch_only_flag_v2_9 = 1 ORDER BY dedup_final_rank_no_v2_9 ASC"
+                Return BuildSelectColumnSqlV29(True) & " FROM supertrend_top_candidate_board_dedup_view_v2_9 WHERE ui_watch_only_flag_v2_9 = 1 ORDER BY dedup_final_rank_no_v2_9 ASC"
             Case "REJECT_ONLY"
-                Return selectColumns & " FROM supertrend_top_candidate_board_raw_view_v2_9 WHERE ui_reject_only_flag_v2_9 = 1 ORDER BY final_rank_no_v2_8 ASC"
+                Return BuildSelectColumnSqlV29(False) & " FROM supertrend_top_candidate_board_raw_view_v2_9 WHERE ui_reject_only_flag_v2_9 = 1 ORDER BY final_rank_no_v2_8 ASC"
+            Case "LIVE_COMPACT_V3_4"
+                Return BuildSelectColumnSqlV34(True) & " FROM supertrend_top_candidate_board_dedup_view_v3_4 WHERE ui_live_compact_flag_v3_4 = 1 ORDER BY dedup_final_rank_no_v3_4 ASC"
+            Case "TEST_ALL_V3_4"
+                Return BuildSelectColumnSqlV34(False) & " FROM supertrend_top_candidate_board_raw_view_v3_4 WHERE ui_test_all_flag_v3_4 = 1 ORDER BY board_action_order_v3_4 ASC, final_rank_no_v2_8 ASC"
+            Case "PROMOTED_WATCH_ONLY"
+                Return BuildSelectColumnSqlV34(True) & " FROM supertrend_top_candidate_board_dedup_view_v3_4 WHERE ui_promoted_watch_flag_v3_4 = 1 ORDER BY dedup_final_rank_no_v3_4 ASC"
+            Case "REJECT_ONLY_V3_4"
+                Return BuildSelectColumnSqlV34(False) & " FROM supertrend_top_candidate_board_raw_view_v3_4 WHERE ui_reject_only_flag_v3_4 = 1 ORDER BY final_rank_no_v2_8 ASC"
             Case Else
-                Return selectColumns & " FROM supertrend_top_candidate_board_dedup_view_v2_9 WHERE ui_live_compact_flag_v2_9 = 1 ORDER BY dedup_final_rank_no_v2_9 ASC"
+                Return BuildSelectColumnSqlV34(True) & " FROM supertrend_top_candidate_board_dedup_view_v3_4 WHERE ui_live_compact_flag_v3_4 = 1 ORDER BY dedup_final_rank_no_v3_4 ASC"
         End Select
     End Function
 
-    Private Function BuildSelectColumnSql() As String
+    Private Function BuildSelectColumnSqlV29(ByVal useDedup As Boolean) As String
+        Dim dedupRankSql As String
+        If useDedup Then
+            dedupRankSql = "dedup_final_rank_no_v2_9 AS dedup_rank, dedup_action_rank_no_v2_9 AS action_rank_display, "
+        Else
+            dedupRankSql = "NULL AS dedup_rank, action_rank_no_v2_8 AS action_rank_display, "
+        End If
+
         Return "SELECT " &
-               "dedup_final_rank_no_v2_9, " &
-               "dedup_action_rank_no_v2_9, " &
-               "final_rank_no_v2_8, " &
-               "action_rank_no_v2_8, " &
-               "board_action_v2_8, " &
-               "board_action_kr_v2_8, " &
-               "code, " &
-               "name, " &
-               "ticker_label, " &
-               "entry_time_text, " &
-               "entry_price, " &
-               "expected_return_pct, " &
-               "mae_risk_pct, " &
-               "start_cum_amount_eok, " &
-               "tick_confirm_score_v2_6, " &
-               "tick_intensity_v2_6, " &
-               "buy_tick_ratio_v2_6, " &
-               "large_trade_amount_eok_v2_6, " &
-               "hoga_bid_pressure_v2_6, " &
-               "hoga_ask_absorption_v2_6, " &
-               "spread_risk_v2_6, " &
-               "final_next_action_v2_8, " &
-               "board_reason_v2_8, " &
-               "realtime_snapshot_time, " &
-               "realtime_source_tag"
+               dedupRankSql &
+               "final_rank_no_v2_8 AS raw_rank, " &
+               "board_action_v2_8 AS board_action_display, " &
+               "board_action_kr_v2_8 AS board_action_kr_display, " &
+               "0 AS promote_reject_to_watch_flag_v3_4, " &
+               "'' AS promotion_flag_display, " &
+               "code, name, ticker_label, entry_time_text, entry_price, expected_return_pct, mae_risk_pct, " &
+               "start_cum_amount_eok, tick_confirm_score_v2_6, tick_intensity_v2_6, buy_tick_ratio_v2_6, " &
+               "large_trade_amount_eok_v2_6, hoga_bid_pressure_v2_6, hoga_ask_absorption_v2_6, spread_risk_v2_6, " &
+               "final_next_action_v2_8, board_reason_v2_8 AS board_reason_display, realtime_snapshot_time, realtime_source_tag"
     End Function
 
-    Private Sub EnsureUiRankColumn(ByVal table As DataTable, ByVal mode As String)
+    Private Function BuildSelectColumnSqlV34(ByVal useDedup As Boolean) As String
+        Dim dedupRankSql As String
+        If useDedup Then
+            dedupRankSql = "dedup_final_rank_no_v3_4 AS dedup_rank, dedup_action_rank_no_v3_4 AS action_rank_display, "
+        Else
+            dedupRankSql = "NULL AS dedup_rank, action_rank_no_v2_8 AS action_rank_display, "
+        End If
+
+        Return "SELECT " &
+               dedupRankSql &
+               "final_rank_no_v2_8 AS raw_rank, " &
+               "board_action_v3_4 AS board_action_display, " &
+               "CASE WHEN board_action_v3_4 = 'PROMOTE_REJECT_TO_WATCH' THEN '승격감시' ELSE board_action_kr_v2_8 END AS board_action_kr_display, " &
+               "promote_reject_to_watch_flag_v3_4, " &
+               "CASE WHEN promote_reject_to_watch_flag_v3_4 = 1 THEN 'Y' ELSE '' END AS promotion_flag_display, " &
+               "code, name, ticker_label, entry_time_text, entry_price, expected_return_pct, mae_risk_pct, " &
+               "start_cum_amount_eok, tick_confirm_score_v2_6, tick_intensity_v2_6, buy_tick_ratio_v2_6, " &
+               "large_trade_amount_eok_v2_6, hoga_bid_pressure_v2_6, hoga_ask_absorption_v2_6, spread_risk_v2_6, " &
+               "final_next_action_v2_8, CONCAT(promotion_reason_v3_4, ' / ', board_reason_v2_8) AS board_reason_display, realtime_snapshot_time, realtime_source_tag"
+    End Function
+
+    Private Sub EnsureUiRankColumn(ByVal table As DataTable)
         If Not table.Columns.Contains("ui_rank") Then
             table.Columns.Add("ui_rank", GetType(Integer))
         End If
 
-        Dim useDedupRank As Boolean = Not String.Equals(mode, "TEST_ALL", StringComparison.OrdinalIgnoreCase) AndAlso
-                                      Not String.Equals(mode, "REJECT_ONLY", StringComparison.OrdinalIgnoreCase)
-
         Dim i As Integer
         For i = 0 To table.Rows.Count - 1
             Dim row As DataRow = table.Rows(i)
-            If useDedupRank AndAlso table.Columns.Contains("dedup_final_rank_no_v2_9") AndAlso Not IsDBNull(row("dedup_final_rank_no_v2_9")) Then
-                row("ui_rank") = Convert.ToInt32(row("dedup_final_rank_no_v2_9"))
-            ElseIf table.Columns.Contains("final_rank_no_v2_8") AndAlso Not IsDBNull(row("final_rank_no_v2_8")) Then
-                row("ui_rank") = Convert.ToInt32(row("final_rank_no_v2_8"))
+            If table.Columns.Contains("dedup_rank") AndAlso Not IsDBNull(row("dedup_rank")) Then
+                row("ui_rank") = Convert.ToInt32(row("dedup_rank"))
+            ElseIf table.Columns.Contains("raw_rank") AndAlso Not IsDBNull(row("raw_rank")) Then
+                row("ui_rank") = Convert.ToInt32(row("raw_rank"))
             Else
                 row("ui_rank") = i + 1
             End If
@@ -291,6 +317,9 @@ Public Class frmTopCandidateBoard
         ElseIf String.Equals(actionValue, "WATCH_HOGA_TICK", StringComparison.OrdinalIgnoreCase) Then
             row.DefaultCellStyle.BackColor = Color.FromArgb(255, 250, 225)
             row.DefaultCellStyle.ForeColor = Color.FromArgb(90, 70, 0)
+        ElseIf String.Equals(actionValue, "PROMOTE_REJECT_TO_WATCH", StringComparison.OrdinalIgnoreCase) Then
+            row.DefaultCellStyle.BackColor = Color.FromArgb(230, 242, 255)
+            row.DefaultCellStyle.ForeColor = Color.FromArgb(0, 55, 110)
         ElseIf String.Equals(actionValue, "REJECT", StringComparison.OrdinalIgnoreCase) Then
             row.DefaultCellStyle.BackColor = Color.FromArgb(245, 245, 245)
             row.DefaultCellStyle.ForeColor = Color.FromArgb(110, 110, 110)
