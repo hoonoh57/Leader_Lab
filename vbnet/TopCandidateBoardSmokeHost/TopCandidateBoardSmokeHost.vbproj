@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(MSBuildToolsPath)\Microsoft.VisualBasic.targets" />
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
@@ -9,6 +9,7 @@
     <RootNamespace>TopCandidateBoardSmokeHost</RootNamespace>
     <AssemblyName>TopCandidateBoardSmokeHost</AssemblyName>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
     <OptionExplicit>On</OptionExplicit>
     <OptionStrict>On</OptionStrict>
     <OptionInfer>Off</OptionInfer>
@@ -17,6 +18,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+    <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+    <TargetFrameworkProfile />
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -55,4 +58,5 @@
       <Version>8.4.0</Version>
     </PackageReference>
   </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.VisualBasic.targets" />
 </Project>
