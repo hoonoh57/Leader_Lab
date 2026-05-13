@@ -14,6 +14,7 @@ $required = @(
     'docs/logic_registry_st_reverse_analysis.md',
     'docs/session_handoff_2026_05_13_st_answer_reverse_v7_1.md',
     'src/review/generate_st_answer_reverse_analysis_v7_1.py',
+    'src/review/generate_st_answer_reverse_analysis_v7_1a.py',
     'src/review/generate_supertrend_regime_discovery_dashboard_v2.py',
     'src/review/generate_supertrend_regime_discovery_dashboard_v5.py',
     'src/review/generate_supertrend_regime_discovery_dashboard_v6.py'
@@ -40,11 +41,15 @@ python -m py_compile src/review/generate_st_answer_reverse_analysis_v7_1.py
 if ($LASTEXITCODE -ne 0) {
     throw 'py_compile generate_st_answer_reverse_analysis_v7_1.py failed'
 }
+python -m py_compile src/review/generate_st_answer_reverse_analysis_v7_1a.py
+if ($LASTEXITCODE -ne 0) {
+    throw 'py_compile generate_st_answer_reverse_analysis_v7_1a.py failed'
+}
 
 Write-Host '=== GENERATE DASHBOARD ==='
-python -m src.review.generate_st_answer_reverse_analysis_v7_1 --env .env --output 'reports/supertrend_regime_discovery_dashboard_v7_1.html' --eval-output 'reports/st_answer_reverse_eval_v7_1.csv' --warmup-bars 80 --prev-display-start '12:00'
+python -m src.review.generate_st_answer_reverse_analysis_v7_1a --env .env --output 'reports/supertrend_regime_discovery_dashboard_v7_1.html' --eval-output 'reports/st_answer_reverse_eval_v7_1.csv' --warmup-bars 80 --prev-display-start '12:00'
 if ($LASTEXITCODE -ne 0) {
-    throw 'generate_st_answer_reverse_analysis_v7_1 failed'
+    throw 'generate_st_answer_reverse_analysis_v7_1a failed'
 }
 
 $reportPath = Join-Path $root 'reports/supertrend_regime_discovery_dashboard_v7_1.html'
