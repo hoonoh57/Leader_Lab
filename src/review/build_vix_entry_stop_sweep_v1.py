@@ -36,25 +36,27 @@ def avg(values: Iterable[Optional[float]]) -> Optional[float]:
     for v in values:
         if v is not None:
             arr.append(v)
-    if len(arr) = 0:
+    if len(arr) == 0:
         return None
     return sum(arr) / len(arr)
 
 
 def outcome_pnl_pct(post: Dict[str, Any], target_pct: float, stop_pct: float) -> float:
     label = str(post.get("post_TX_outcome_label") or "")
-    if label = "VIX_CONTINUATION_WIN":
+    if label == "VIX_CONTINUATION_WIN":
         return target_pct
-    if label = "VIX_WEAK_REJECT":
+    if label == "VIX_WEAK_REJECT":
         return stop_pct
     return 0.0
 
 
 def make_no_entry(candidate: Dict[str, Any], threshold_pct: float, stop_pct: float, target_pct: float, label: str) -> Dict[str, Any]:
+    cap = candidate.get("T_capture")
+    cap_text = cap.isoformat(sep=" ") if hasattr(cap, "isoformat") else str(cap)
     return {
         "trade_date": candidate.get("trade_date"),
         "condition_name": candidate.get("condition_name") or "",
-        "T_capture": candidate.get("T_capture").isoformat(sep=" "),
+        "T_capture": cap_text,
         "breakout_threshold_pct": threshold_pct,
         "target_pct": target_pct,
         "stop_loss_pct": stop_pct,
@@ -82,7 +84,7 @@ def make_no_entry(candidate: Dict[str, Any], threshold_pct: float, stop_pct: flo
 
 def evaluate_candidate_stop_sweep(candidate: Dict[str, Any], candles: Sequence[Dict[str, Any]], prev_close: Optional[float], thresholds: Sequence[float], stops: Sequence[float], target_pct: float) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    if prev_close is None or prev_close <= 0 or len(candles) = 0:
+    if prev_close is None or prev_close <= 0 or len(candles) == 0:
         for threshold_pct in thresholds:
             for stop_pct in stops:
                 rows.append(make_no_entry(candidate, threshold_pct, stop_pct, target_pct, "NO_PREV_CLOSE_OR_CANDLES"))
@@ -141,11 +143,11 @@ def summarize_stop_sweep(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]
         for r in rs:
             if r.get("TX") is not None:
                 entries.append(r)
-                if int(r.get("post_TX_plus2_success") or 0) = 1:
+                if int(r.get("post_TX_plus2_success") or 0) == 1:
                     wins.append(r)
-                elif str(r.get("post_TX_outcome_label") or "") = "VIX_WEAK_REJECT":
+                elif str(r.get("post_TX_outcome_label") or "") == "VIX_WEAK_REJECT":
                     rejects.append(r)
-                elif str(r.get("post_TX_outcome_label") or "") = "VIX_STALL":
+                elif str(r.get("post_TX_outcome_label") or "") == "VIX_STALL":
                     stalls.append(r)
         target_pct = float(rs[0].get("target_pct") or DEFAULT_TARGET_PCT)
         gross_win = len(wins) * target_pct
@@ -186,8 +188,8 @@ def summarize_daily(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         trade_date, threshold_pct, stop_pct = key
         rs = groups[key]
         entries = [r for r in rs if r.get("TX") is not None]
-        wins = [r for r in entries if int(r.get("post_TX_plus2_success") or 0) = 1]
-        rejects = [r for r in entries if str(r.get("post_TX_outcome_label") or "") = "VIX_WEAK_REJECT"]
+        wins = [r for r in entries if int(r.get("post_TX_plus2_success") or 0) == 1]
+        rejects = [r for r in entries if str(r.get("post_TX_outcome_label") or "") == "VIX_WEAK_REJECT"]
         result.append({
             "trade_date": trade_date,
             "breakout_threshold_pct": threshold_pct,
@@ -332,7 +334,7 @@ def main() -> int:
                 candle_cache[key] = (candles, prev_close)
             candles, prev_close = candle_cache[key]
             detail_rows.extend(evaluate_candidate_stop_sweep(cand, candles, prev_close, thresholds, stops, args.target_pct))
-            if i % 200 = 0:
+            if i % 200 == 0:
                 print("processed_candidates=" + str(i))
 
         summary_rows = summarize_stop_sweep(detail_rows)
