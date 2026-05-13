@@ -194,7 +194,24 @@ Core는 안정화하고, 실험은 설정/버전으로 바꾼다.
 - [x] Top Candidate Board v3.2 integration guide verified
 
 - [x] Top Candidate Board Promotion v3.4 verified
-  - script: `scripts/build_top_candidate_board_promotion_v3_4.ps1`
+
+- [x] Top Candidate Board UI v3.4 verified
+  - file: `vbnet/frmTopCandidateBoard.vb`
+  - script: `scripts/build_top_candidate_board_ui_v3_4.ps1`
+  - added modes:
+    - `LIVE_COMPACT_V3_4`
+    - `TEST_ALL_V3_4`
+    - `PROMOTED_WATCH_ONLY`
+    - `REJECT_ONLY_V3_4`
+  - preserved v2.9 modes:
+    - `LIVE_COMPACT`
+    - `TEST_ALL`
+    - `AUTO_BUY_ONLY`
+    - `WATCH_ONLY`
+    - `REJECT_ONLY`
+  - default mode: `LIVE_COMPACT_V3_4`
+  - interpretation: UI can compare v2.9 compact board and v3.4 promoted compact board.
+  - next step: compile/run app or wire MainForm/Docking ToolWindow.  - script: `scripts/build_top_candidate_board_promotion_v3_4.ps1`
   - output tables:
     - `supertrend_top_candidate_board_raw_view_v3_4`
     - `supertrend_top_candidate_board_dedup_view_v3_4`
