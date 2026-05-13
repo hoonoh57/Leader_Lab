@@ -40,21 +40,24 @@ if ($LASTEXITCODE -ne 0) {
     throw 'py_compile failed'
 }
 
+# IMPORTANT:
+# Negative stop values such as -0.5 are parsed by argparse as option-like tokens
+# if they are passed as the next argument after --stops. Therefore pass option=value.
 $argsList = @(
     '-m', 'src.review.build_vix_entry_stop_sweep_v1',
-    '--env', '.env',
-    '--capture-time', $CaptureTime,
-    '--thresholds', $Thresholds,
-    '--stops', $Stops,
-    '--target-pct', $TargetPct,
-    '--output-dir', 'reports'
+    '--env=.env',
+    ('--capture-time=' + $CaptureTime),
+    ('--thresholds=' + $Thresholds),
+    ('--stops=' + $Stops),
+    ('--target-pct=' + $TargetPct),
+    '--output-dir=reports'
 )
 
-if ($StartDate.Trim() -ne '') { $argsList += @('--start-date', $StartDate) }
-if ($EndDate.Trim() -ne '') { $argsList += @('--end-date', $EndDate) }
-if ($CandidateTable.Trim() -ne '') { $argsList += @('--candidate-table', $CandidateTable) }
-if ($ConditionName.Trim() -ne '') { $argsList += @('--condition-name', $ConditionName) }
-if ($CandleTable.Trim() -ne '') { $argsList += @('--candle-table', $CandleTable) }
+if ($StartDate.Trim() -ne '') { $argsList += ('--start-date=' + $StartDate) }
+if ($EndDate.Trim() -ne '') { $argsList += ('--end-date=' + $EndDate) }
+if ($CandidateTable.Trim() -ne '') { $argsList += ('--candidate-table=' + $CandidateTable) }
+if ($ConditionName.Trim() -ne '') { $argsList += ('--condition-name=' + $ConditionName) }
+if ($CandleTable.Trim() -ne '') { $argsList += ('--candle-table=' + $CandleTable) }
 
 Write-Host '=== RUN STOP SWEEP ==='
 python @argsList
