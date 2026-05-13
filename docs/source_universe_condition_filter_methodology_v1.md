@@ -21,6 +21,28 @@ Build a source condition universe that already contains likely same-day leaders,
 then improve the selection rate of true strong SuperTrend regimes inside that universe.
 ```
 
+## Phase 0 objective: macro hit-rate improvement
+
+The first objective is to improve the condition-search source itself.
+
+Example:
+
+```text
+09:05 condition captures 40 stocks.
+Among them, 5 later reach at least +10% max return.
+Macro hit rate = 5 / 40 = 12.5%.
+```
+
+The upstream task is to raise this macro hit rate before applying any refined SuperTrend selector.
+
+```text
+condition_capture_count = number of stocks captured by the condition at the decision time
+leader_hit_count = number of captured stocks whose future max return reaches the leader threshold
+macro_hit_rate = leader_hit_count / condition_capture_count
+```
+
+A condition formula is useful only if it improves this rate while keeping enough candidates for practical trading.
+
 ## Fixed hypothesis
 
 Every trading day has a limited number of true leaders.
@@ -59,26 +81,45 @@ E. sector/theme leadership universe
 
 The condition-search formula itself is not a minor detail. It is the upstream classifier.
 
-## Baseline comparisons
+## Condition-source scorecard
 
-For each candidate condition-search source, compute:
+For each condition formula and each decision time, compute:
 
 ```text
 condition_name
+condition_version
 trade_date
+decision_time
 candidate_count
-leader_capture_count
-st_up_count
-strong_st_count
-bad_st_count
-strong_st_rate
-bad_st_rate
-avg_forward_mfe
-median_forward_mfe
+leader_hit_count_5pct
+leader_hit_count_10pct
+macro_hit_rate_5pct
+macro_hit_rate_10pct
+candidate_median_future_max_return
+candidate_avg_future_max_return
+candidate_bad_count
+candidate_bad_rate
 amount_topN_overlap
+st_up_overlap_count
+st_strong_overlap_count
 ```
 
-Compare at least these baselines:
+For the user's current reference example:
+
+```text
+condition_name = 1516 or candidate condition formula
+trade_date = selected date
+decision_time = 09:05
+candidate_count = 40
+leader_hit_count_10pct = 5
+macro_hit_rate_10pct = 12.5%
+```
+
+The next condition formula is considered improved only if it raises macro_hit_rate_10pct or reduces bad_rate without collapsing candidate_count.
+
+## Baseline comparisons
+
+Compare at least these condition sources:
 
 ```text
 B0: all SuperTrend UP segments
@@ -89,6 +130,8 @@ B4: +10% high reached + amount Top N + ST UP transition
 B5: daily breakout/pullback/re-rise + amount Top N + ST UP transition
 B6: B5 + sector/theme leader/follower classification
 ```
+
+The first report must show whether B1 already has useful macro hit rate, and whether B2/B3-style source filters improve it.
 
 ## Why +10% high and amount Top N matter
 
@@ -108,10 +151,11 @@ This helps separate leader candidates from low-liquidity spikes and weak/late fo
 
 ```text
 Step 1. Define source condition candidates.
-Step 2. For each date, generate candidate universe from each source condition.
-Step 3. Measure whether the universe contains the day's real leaders.
-Step 4. Only inside the best source universe, test SuperTrend strong-regime selectors.
-Step 5. Compare every selector against the same source-universe baseline.
+Step 2. For each date and decision time, generate candidate universe from each source condition.
+Step 3. Measure macro hit rate: leader hits / captured candidates.
+Step 4. Measure whether the universe contains the day's amount/tick leaders.
+Step 5. Only inside the best source universe, test SuperTrend strong-regime selectors.
+Step 6. Compare every selector against the same source-universe baseline.
 ```
 
 ## Required data
@@ -135,6 +179,7 @@ Do not test a downstream SuperTrend filter without first recording its source un
 Do not call a selector successful if the source condition already preselected only winners.
 Do not mix full-market ST segments with condition-search candidates without labeling the universe source.
 Do not optimize thresholds on one selected date.
+Do not proceed to refined SuperTrend filtering until the macro hit rate of the source condition is known.
 ```
 
 ## Immediate next benchmark
