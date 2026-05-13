@@ -196,7 +196,21 @@ Core는 안정화하고, 실험은 설정/버전으로 바꾼다.
 - [x] Top Candidate Board Promotion v3.4 verified
 
 - [x] Top Candidate Board UI v3.4 verified
-  - file: `vbnet/frmTopCandidateBoard.vb`
+
+- [x] Top Candidate Board Smoke Host v3.6 verified
+  - project: `vbnet/TopCandidateBoardSmokeHost/TopCandidateBoardSmokeHost.vbproj`
+  - program: `vbnet/TopCandidateBoardSmokeHost/Program.vb`
+  - script: `scripts/build_top_candidate_board_smoke_host_v3_6.ps1`
+  - target framework: `.NET Framework 4.8`
+  - package: `MySql.Data 8.4.0`
+  - form: `frmTopCandidateBoard.vb`
+  - verified result:
+    - restore success
+    - build success
+    - warnings: `0`
+    - errors: `0`
+    - exe: `vbnet/TopCandidateBoardSmokeHost/bin/Debug/TopCandidateBoardSmokeHost.exe`
+  - next step: run smoke host with `-Run`, refresh `LIVE_COMPACT_V3_4`, and verify DB rows and double-click `CandidateActivated` event.  - file: `vbnet/frmTopCandidateBoard.vb`
   - script: `scripts/build_top_candidate_board_ui_v3_4.ps1`
   - added modes:
     - `LIVE_COMPACT_V3_4`
