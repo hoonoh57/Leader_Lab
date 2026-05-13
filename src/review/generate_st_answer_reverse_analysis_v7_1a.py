@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 """Compatibility wrapper for ST Answer Reverse Analysis v7-1a.
 
-The original v7_1 module expected information_schema column rows to expose
-`column_name`. On some MySQL/PyMySQL combinations the key is returned as
-`COLUMN_NAME`, which produced a list of None values. This wrapper patches only
-that metadata reader and then executes the v7-1a generator.
+This wrapper patches two issues without changing the legacy generator filename:
+
+1. MySQL information_schema column rows may expose COLUMN_NAME instead of
+   column_name.
+2. v7-1a must not call a submission a HIT just because the same date/code has a
+   different high-return ST segment. HIT requires the submitted ST parameter /
+   segment_no to match, and selected_entry_time must be inside that answer
+   segment.
 """
 
 from __future__ import annotations
 
-from typing import Any, List
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from src.review import generate_st_answer_reverse_analysis_v7_1 as base
 
@@ -47,7 +52,192 @@ def robust_table_columns(conn: Any, table_name: str) -> List[str]:
     return columns
 
 
+def _to_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except Exception:
+        return None
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _dt(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).replace("T", " ")
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _same_st_param(sub: Dict[str, Any], seg: Dict[str, Any]) -> bool:
+    sp = _to_int(sub.get("st_period"))
+    gp = _to_int(seg.get("st_period"))
+    sm = _to_float(sub.get("st_multiplier"))
+    gm = _to_float(seg.get("st_multiplier"))
+    if sp is None or gp is None or sm is None or gm is None:
+        return False
+    return sp == gp and abs(sm - gm) < 0.000001
+
+
+def _same_segment_no(sub: Dict[str, Any], seg: Dict[str, Any]) -> bool:
+    ss = _to_int(sub.get("segment_no"))
+    gs = _to_int(seg.get("segment_no"))
+    if ss is None or gs is None:
+        return False
+    return ss == gs
+
+
+def _inside_segment(sub: Dict[str, Any], seg: Dict[str, Any]) -> bool:
+    decision = sub.get("decision_dt")
+    if not isinstance(decision, datetime):
+        decision = _dt(sub.get("decision_time"))
+    start = _dt(seg.get("st_up_start_time"))
+    end = _dt(seg.get("st_up_end_time"))
+    if decision is None or start is None or end is None:
+        return False
+    return start <= decision <= end
+
+
+def _minutes_from_start(sub: Dict[str, Any], seg: Optional[Dict[str, Any]]) -> Optional[float]:
+    if seg is None:
+        return None
+    decision = sub.get("decision_dt")
+    if not isinstance(decision, datetime):
+        decision = _dt(sub.get("decision_time"))
+    start = _dt(seg.get("st_up_start_time"))
+    if decision is None or start is None:
+        return None
+    return (decision - start).total_seconds() / 60.0
+
+
+def strict_answer_segment(sub: Dict[str, Any], segments_by_key: Dict[Tuple[str, str], List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    key = (str(sub.get("trade_date")), str(sub.get("code")))
+    candidates = segments_by_key.get(key, [])
+    if not candidates:
+        return None
+
+    exact: List[Dict[str, Any]] = []
+    for seg in candidates:
+        if _same_st_param(sub, seg) and _same_segment_no(sub, seg):
+            exact.append(seg)
+    if exact:
+        exact.sort(key=lambda s: base.safe_float(s.get("st_up_max_return_pct")) or -999999.0, reverse=True)
+        return exact[0]
+
+    temporal: List[Dict[str, Any]] = []
+    for seg in candidates:
+        if _same_st_param(sub, seg) and _inside_segment(sub, seg):
+            temporal.append(seg)
+    if temporal:
+        temporal.sort(key=lambda s: base.safe_float(s.get("st_up_max_return_pct")) or -999999.0, reverse=True)
+        return temporal[0]
+
+    return None
+
+
+def eval_group_for_strict(quality: str, sub: Optional[Dict[str, Any]] = None, seg: Optional[Dict[str, Any]] = None) -> str:
+    if seg is None:
+        return "NO_TEMPORAL_OVERLAP"
+    if sub is not None and not _inside_segment(sub, seg):
+        return "TIME_MISMATCH"
+    if quality == "GREAT":
+        return "HIT_GREAT"
+    if quality == "GOOD":
+        return "HIT_GOOD"
+    if quality in ("BAD", "NEUTRAL"):
+        return "FALSE_BUY"
+    return "NO_TEMPORAL_OVERLAP"
+
+
+def why_note_for_strict(group: str, sub: Dict[str, Any], seg: Optional[Dict[str, Any]]) -> str:
+    gap = _minutes_from_start(sub, seg)
+    gap_text = ""
+    if gap is not None:
+        gap_text = " entry-start %.1f분" % gap
+    if group == "HIT_GREAT":
+        return "동일 ST 파라미터/segment_no이며 진입시각이 정답 ST 구간 내부:" + gap_text
+    if group == "HIT_GOOD":
+        return "동일 ST 구간 내부지만 GREAT 미달. GREAT와의 차이 분석:" + gap_text
+    if group == "FALSE_BUY":
+        return "동일 ST 구간 내부이나 GOOD 미달. 오탐 원인 확인:" + gap_text
+    if group == "TIME_MISMATCH":
+        return "동일 ST segment_no는 찾았지만 진입시각이 ST 구간 밖임. overlap 아님:" + gap_text
+    return "동일 날짜/종목의 고수익 ST 구간만으로는 HIT 판정 금지. 시간/segment overlap 없음"
+
+
+def build_submission_evaluation_strict(submissions: Sequence[Dict[str, Any]], segments: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    segments_by_key: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for seg in segments:
+        key = (base.stringify_date(seg.get("trade_date")), str(seg.get("code")))
+        segments_by_key.setdefault(key, []).append(seg)
+
+    eval_rows: List[Dict[str, Any]] = []
+    display_segments: List[Dict[str, Any]] = []
+    seen_segment_ids = set()
+
+    for sub in submissions:
+        seg = strict_answer_segment(sub, segments_by_key)
+        quality = base.answer_quality(seg)
+        group = eval_group_for_strict(quality, sub, seg)
+        seg_id = seg.get("id") if seg else None
+        if seg is not None and seg_id not in seen_segment_ids:
+            display_segments.append(seg)
+            seen_segment_ids.add(seg_id)
+
+        row = {
+            "submission_id": sub.get("id"),
+            "segment_id": seg_id,
+            "trade_date": sub.get("trade_date"),
+            "code": sub.get("code"),
+            "name": sub.get("name"),
+            "decision_time": sub.get("decision_time"),
+            "selected_entry_price": base.safe_float(sub.get("selected_entry_price")),
+            "causal_action": sub.get("causal_action"),
+            "causal_score": sub.get("causal_score"),
+            "execution_score_v1_9": base.safe_float(sub.get("execution_score_v1_9")),
+            "score_total": base.safe_float(sub.get("score_total")),
+            "filter_score_v1_6": base.safe_float(sub.get("filter_score_v1_6")),
+            "entry_score_v2_0": base.safe_float(sub.get("entry_score_v2_0")),
+            "top_rank_score_v2_1": base.safe_float(sub.get("top_rank_score_v2_1")),
+            "start_from_day_open_pct": base.safe_float(sub.get("start_from_day_open_pct")),
+            "start_from_day_low_pct": base.safe_float(sub.get("start_from_day_low_pct")),
+            "start_cum_amount": base.safe_float(sub.get("start_cum_amount")),
+            "entry_reason_v2_0": sub.get("entry_reason_v2_0"),
+            "top_rank_reason_v2_1": sub.get("top_rank_reason_v2_1"),
+            "answer_quality": quality,
+            "st_param": base.v2.param_key(seg.get("st_period"), seg.get("st_multiplier")) if seg else None,
+            "answer_segment_no": seg.get("segment_no") if seg else None,
+            "st_up_start_time": str(seg.get("st_up_start_time")) if seg else None,
+            "st_up_end_time": str(seg.get("st_up_end_time")) if seg else None,
+            "st_up_max_return_pct": base.safe_float(seg.get("st_up_max_return_pct")) if seg else None,
+            "st_up_end_return_pct": base.safe_float(seg.get("st_up_end_return_pct")) if seg else None,
+            "eval_group": group,
+            "why_note": why_note_for_strict(group, sub, seg),
+            "leakage_status": "PASS_EXACT_SEGMENT_AND_TIME_OVERLAP" if group in ("HIT_GREAT", "HIT_GOOD", "FALSE_BUY") else "NO_VALID_OVERLAP",
+        }
+        eval_rows.append(row)
+
+    return eval_rows, display_segments
+
+
 base.table_columns = robust_table_columns
+base.best_answer_segment = strict_answer_segment
+base.eval_group_for = eval_group_for_strict
+base.why_note_for = why_note_for_strict
+base.build_submission_evaluation = build_submission_evaluation_strict
 
 
 if __name__ == "__main__":
