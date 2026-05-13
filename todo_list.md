@@ -192,7 +192,28 @@ Core는 안정화하고, 실험은 설정/버전으로 바꾼다.
   - `segments=25070`
   - `reports/supertrend_regime_discovery_dashboard.html`
 - [x] Top Candidate Board v3.2 integration guide verified
-  - docs/top_candidate_board_integration_v3_2.md
+
+- [x] Top Candidate Board Promotion v3.4 verified
+  - script: `scripts/build_top_candidate_board_promotion_v3_4.ps1`
+  - output tables:
+    - `supertrend_top_candidate_board_raw_view_v3_4`
+    - `supertrend_top_candidate_board_dedup_view_v3_4`
+    - `supertrend_top_candidate_board_summary_v3_4`
+    - `supertrend_top_candidate_board_examples_v3_4`
+  - DEDUP result:
+    - `AUTO_BUY_READY=1`
+    - `WATCH_HOGA_TICK=6`
+    - `PROMOTE_REJECT_TO_WATCH=7`
+    - `REJECT=47`
+  - live compact v3.4 total: `14`
+  - promotion gate:
+    - `tick_confirm_score >= 30`
+    - `spread_risk <= 35`
+    - `buy_tick_ratio >= 60`
+    - `hoga_bid_pressure >= 55`
+    - `hoga_ask_absorption >= 55`
+  - interpretation: v3.4 keeps v2.9 intact and adds a conservative REJECT-to-WATCH promotion layer.
+  - next step: add v3.4 modes to `frmTopCandidateBoard.vb` without removing v2.9 modes.  - docs/top_candidate_board_integration_v3_2.md
   - vbnet/TopCandidateBoardIntegrationGuide.vb
   - vbnet/frmTopCandidateBoard.vb
   - verification script: scripts/build_top_candidate_board_integration_v3_2.ps1
