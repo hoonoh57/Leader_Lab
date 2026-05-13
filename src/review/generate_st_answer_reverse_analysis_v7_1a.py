@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Compatibility wrapper for ST Answer Reverse Analysis v7-1a.
 
-This wrapper patches two issues without changing the legacy generator filename:
+This wrapper patches three issues without changing the legacy generator filename:
 
 1. MySQL information_schema column rows may expose COLUMN_NAME instead of
    column_name.
@@ -9,14 +9,20 @@ This wrapper patches two issues without changing the legacy generator filename:
    different high-return ST segment. HIT requires the submitted ST parameter /
    segment_no to match, and selected_entry_time must be inside that answer
    segment.
+3. Being inside the ST green segment is not enough. If the signal is detected
+   long after the ST rise started, it is a late confirmation, not an early
+   answer. HIT requires early detection near the ST start.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from src.review import generate_st_answer_reverse_analysis_v7_1 as base
+
+
+MAX_EARLY_ENTRY_MINUTES = 15.0
 
 
 def robust_table_columns(conn: Any, table_name: str) -> List[str]:
@@ -100,10 +106,15 @@ def _same_segment_no(sub: Dict[str, Any], seg: Dict[str, Any]) -> bool:
     return ss == gs
 
 
-def _inside_segment(sub: Dict[str, Any], seg: Dict[str, Any]) -> bool:
+def _decision_time(sub: Dict[str, Any]) -> Optional[datetime]:
     decision = sub.get("decision_dt")
-    if not isinstance(decision, datetime):
-        decision = _dt(sub.get("decision_time"))
+    if isinstance(decision, datetime):
+        return decision
+    return _dt(sub.get("decision_time"))
+
+
+def _inside_segment(sub: Dict[str, Any], seg: Dict[str, Any]) -> bool:
+    decision = _decision_time(sub)
     start = _dt(seg.get("st_up_start_time"))
     end = _dt(seg.get("st_up_end_time"))
     if decision is None or start is None or end is None:
@@ -114,13 +125,18 @@ def _inside_segment(sub: Dict[str, Any], seg: Dict[str, Any]) -> bool:
 def _minutes_from_start(sub: Dict[str, Any], seg: Optional[Dict[str, Any]]) -> Optional[float]:
     if seg is None:
         return None
-    decision = sub.get("decision_dt")
-    if not isinstance(decision, datetime):
-        decision = _dt(sub.get("decision_time"))
+    decision = _decision_time(sub)
     start = _dt(seg.get("st_up_start_time"))
     if decision is None or start is None:
         return None
     return (decision - start).total_seconds() / 60.0
+
+
+def _is_early_entry(sub: Dict[str, Any], seg: Dict[str, Any]) -> bool:
+    gap = _minutes_from_start(sub, seg)
+    if gap is None:
+        return False
+    return 0.0 <= gap <= MAX_EARLY_ENTRY_MINUTES
 
 
 def strict_answer_segment(sub: Dict[str, Any], segments_by_key: Dict[Tuple[str, str], List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
@@ -153,6 +169,8 @@ def eval_group_for_strict(quality: str, sub: Optional[Dict[str, Any]] = None, se
         return "NO_TEMPORAL_OVERLAP"
     if sub is not None and not _inside_segment(sub, seg):
         return "TIME_MISMATCH"
+    if sub is not None and not _is_early_entry(sub, seg):
+        return "LATE_OVERLAP"
     if quality == "GREAT":
         return "HIT_GREAT"
     if quality == "GOOD":
@@ -168,11 +186,13 @@ def why_note_for_strict(group: str, sub: Dict[str, Any], seg: Optional[Dict[str,
     if gap is not None:
         gap_text = " entry-start %.1f분" % gap
     if group == "HIT_GREAT":
-        return "동일 ST 파라미터/segment_no이며 진입시각이 정답 ST 구간 내부:" + gap_text
+        return "초기 검출: 동일 ST 파라미터/segment_no + 진입시각이 ST 시작 후 %.0f분 이내:" % MAX_EARLY_ENTRY_MINUTES + gap_text
     if group == "HIT_GOOD":
-        return "동일 ST 구간 내부지만 GREAT 미달. GREAT와의 차이 분석:" + gap_text
+        return "초기 검출이나 GREAT 미달. GREAT와의 구조 차이 확인:" + gap_text
     if group == "FALSE_BUY":
-        return "동일 ST 구간 내부이나 GOOD 미달. 오탐 원인 확인:" + gap_text
+        return "초기 검출이나 GOOD 미달. 오탐 원인 확인:" + gap_text
+    if group == "LATE_OVERLAP":
+        return "ST 구간 내부지만 너무 늦은 검출. 이미 오른 뒤의 강세 확인은 정답 아님:" + gap_text
     if group == "TIME_MISMATCH":
         return "동일 ST segment_no는 찾았지만 진입시각이 ST 구간 밖임. overlap 아님:" + gap_text
     return "동일 날짜/종목의 고수익 ST 구간만으로는 HIT 판정 금지. 시간/segment overlap 없음"
@@ -197,6 +217,7 @@ def build_submission_evaluation_strict(submissions: Sequence[Dict[str, Any]], se
             display_segments.append(seg)
             seen_segment_ids.add(seg_id)
 
+        gap = _minutes_from_start(sub, seg)
         row = {
             "submission_id": sub.get("id"),
             "segment_id": seg_id,
@@ -222,11 +243,13 @@ def build_submission_evaluation_strict(submissions: Sequence[Dict[str, Any]], se
             "answer_segment_no": seg.get("segment_no") if seg else None,
             "st_up_start_time": str(seg.get("st_up_start_time")) if seg else None,
             "st_up_end_time": str(seg.get("st_up_end_time")) if seg else None,
+            "entry_delay_minutes": gap,
+            "max_early_entry_minutes": MAX_EARLY_ENTRY_MINUTES,
             "st_up_max_return_pct": base.safe_float(seg.get("st_up_max_return_pct")) if seg else None,
             "st_up_end_return_pct": base.safe_float(seg.get("st_up_end_return_pct")) if seg else None,
             "eval_group": group,
             "why_note": why_note_for_strict(group, sub, seg),
-            "leakage_status": "PASS_EXACT_SEGMENT_AND_TIME_OVERLAP" if group in ("HIT_GREAT", "HIT_GOOD", "FALSE_BUY") else "NO_VALID_OVERLAP",
+            "leakage_status": "PASS_EARLY_SEGMENT_OVERLAP" if group in ("HIT_GREAT", "HIT_GOOD", "FALSE_BUY") else "NO_VALID_EARLY_OVERLAP",
         }
         eval_rows.append(row)
 
