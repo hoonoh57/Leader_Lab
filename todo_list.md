@@ -81,6 +81,23 @@ report=reports/supertrend_regime_discovery_dashboard.html
 
 ---
 
+
+### Mandatory repository working rules
+
+Before any future code, script, or document modification, read and follow:
+
+```text
+docs/workflow_server_editing_v1.md
+docs/powershell_script_rule_v1.md
+docs/pre_edit_reading_rule_v1.md
+docs/todo_update_rule_v1.md
+todo_list.md
+latest task handoff document in docs/
+```
+
+Server-first editing remains mandatory. GitHub/server files are created or modified first. Local work is limited to pull, run the versioned script, and status verification.
+
+PowerShell scripts must be Windows PowerShell 5.1 safe. Use ASCII-only ps1 source by default. If Korean text must be written by ps1, write it through UTF-8 Base64 decoding, not direct Korean string literals.
 ## 2. 구현 원칙
 
 ### 2.1 계획 기반 구현
@@ -174,7 +191,13 @@ Core는 안정화하고, 실험은 설정/버전으로 바꾼다.
 - [x] SuperTrend Regime Discovery 결과 생성
   - `segments=25070`
   - `reports/supertrend_regime_discovery_dashboard.html`
-
+- [x] Top Candidate Board v3.2 integration guide verified
+  - docs/top_candidate_board_integration_v3_2.md
+  - vbnet/TopCandidateBoardIntegrationGuide.vb
+  - vbnet/frmTopCandidateBoard.vb
+  - verification script: scripts/build_top_candidate_board_integration_v3_2.ps1
+  - observed result: integration tokens OK, working tree clean
+  - next step: SuperTrend Chart Consistency Gate
 ### 현재 최우선 진행 중
 
 - [ ] SuperTrend Regime Discovery Dashboard에 선택 ST 파라미터 기준 ST Up / ST Down line 표시
