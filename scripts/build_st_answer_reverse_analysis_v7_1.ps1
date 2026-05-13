@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-Write-Host '=== BUILD ST Answer Reverse Analysis v7-1 ==='
+Write-Host '=== BUILD ST Answer Reverse Analysis v7-1a ==='
 Write-Host ('RepoRoot: ' + (Get-Location))
 
 $required = @(
@@ -30,9 +30,10 @@ foreach ($rel in $required) {
 Write-Host '=== BOARD GUARD ==='
 Write-Host 'Board Type: EVALUATION_BOARD'
 Write-Host 'Selected Date: NONE'
-Write-Host 'Universe Source: supertrend_regime_segment + existing v2.0/v2.1 causal candidate tables'
-Write-Host 'Rank Basis: causal fields only; answer fields display/evaluation only'
-Write-Host 'Leakage Status: guarded by selected causal columns'
+Write-Host 'Universe Source: existing v2.0/v2.1 causal submission table + supertrend_regime_segment answer table'
+Write-Host 'Rank Basis: existing causal submission score only; answer fields display/evaluation only'
+Write-Host 'Axis: SUBMISSION_CENTRIC'
+Write-Host 'Leakage Status: PASS_SUBMISSION_CENTRIC_JOIN after local generation'
 
 Write-Host '=== PY COMPILE ==='
 python -m py_compile src/review/generate_st_answer_reverse_analysis_v7_1.py
@@ -41,7 +42,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host '=== GENERATE DASHBOARD ==='
-python -m src.review.generate_st_answer_reverse_analysis_v7_1 --env .env --output 'reports/supertrend_regime_discovery_dashboard_v7_1.html' --eval-output 'reports/st_answer_reverse_eval_v7_1.csv' --limit 12000 --warmup-bars 80 --prev-display-start '12:00'
+python -m src.review.generate_st_answer_reverse_analysis_v7_1 --env .env --output 'reports/supertrend_regime_discovery_dashboard_v7_1.html' --eval-output 'reports/st_answer_reverse_eval_v7_1.csv' --warmup-bars 80 --prev-display-start '12:00'
 if ($LASTEXITCODE -ne 0) {
     throw 'generate_st_answer_reverse_analysis_v7_1 failed'
 }
@@ -58,12 +59,12 @@ if (-not (Test-Path -LiteralPath $csvPath)) {
 
 $html = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
 $tokens = @(
-    'v7-1 Why',
-    'Answer vs Submission',
-    'MISSED_GREAT',
-    'FALSE_BUY',
+    'v7-1a Submission',
+    'Submission 84',
     'HIT_GREAT',
-    'TRUE_REJECT',
+    'HIT_GOOD',
+    'FALSE_BUY',
+    'NO_ANSWER_MATCH',
     'ST_EVAL_V7_1',
     'decision_time',
     'why_note'
@@ -80,7 +81,7 @@ foreach ($token in $tokens) {
 Write-Host '=== OUTPUT ==='
 Write-Host ('report=' + $reportPath)
 Write-Host ('csv=' + $csvPath)
-Write-Host 'Open reports/supertrend_regime_discovery_dashboard_v7_1.html and inspect MISSED_GREAT / FALSE_BUY first.'
+Write-Host 'Open reports/supertrend_regime_discovery_dashboard_v7_1.html and inspect HIT_GREAT / HIT_GOOD / FALSE_BUY.'
 
 Write-Host '=== GIT STATUS ==='
 git status
